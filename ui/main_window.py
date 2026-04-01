@@ -506,8 +506,10 @@ class MainWindow:
         self._timer_var.set("00:00:00")
         self._set_tray_state("idle")
         self._style_recording(False)
-        if not self._converting:
-            self._status_var.set("Finalizing…")
+        # Writer schedules convert UI before stop() returns; this callback is queued after
+        # those, so do not overwrite "Saved:" / "Converting…" / errors.
+        if self._status_var.get() == "Stopping…":
+            self._status_var.set("Ready.")
 
     def _on_disk_error_ui(self, err: str) -> None:
         messagebox.showerror(APP_NAME, f"Disk error while recording:\n{err}")
