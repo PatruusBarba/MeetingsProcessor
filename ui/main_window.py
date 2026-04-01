@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import queue
 import subprocess
 import sys
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, scrolledtext, ttk
 from typing import TYPE_CHECKING
 
 import pystray
@@ -55,6 +56,7 @@ class MainWindow:
         self._last_saved_mp3: str | None = None
         self._converting = False
         self._stop_in_progress = False
+        self._transcription_q: queue.Queue = queue.Queue()
 
         self._tray_icon: pystray.Icon | None = None
         self._tray_thread: threading.Thread | None = None
@@ -79,10 +81,13 @@ class MainWindow:
 
         self._start_tray()
         self._update_timer()
+        self._poll_transcription()
 
     def _build_ui(self) -> None:
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=0)
+        self.root.rowconfigure(1, weight=1)
+        self.root.rowconfigure(2, weight=0)
 
         main = ttk.Frame(self.root, padding=12)
         main.grid(row=0, column=0, sticky="nsew")
@@ -126,8 +131,21 @@ class MainWindow:
             row=5, column=0, columnspan=3, pady=12
         )
 
+        trans_lf = ttk.LabelFrame(self.root, text="Live transcript (offline)", padding=8)
+        trans_lf.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 4))
+        trans_lf.columnconfigure(0, weight=1)
+        trans_lf.rowconfigure(0, weight=1)
+        self._transcript = scrolledtext.ScrolledText(
+            trans_lf,
+            height=10,
+            wrap=tk.WORD,
+            font=("Segoe UI", 10) if sys.platform == "win32" else ("TkDefaultFont", 10),
+            state=tk.DISABLED,
+        )
+        self._transcript.grid(row=0, column=0, sticky="nsew")
+
         bottom = ttk.Frame(self.root, padding=(12, 0, 12, 12))
-        bottom.grid(row=1, column=0, sticky="ew")
+        bottom.grid(row=2, column=0, sticky="ew")
         bottom.columnconfigure(0, weight=1)
 
         self._status_var = tk.StringVar(value="Ready.")
@@ -136,6 +154,29 @@ class MainWindow:
         self._status_label.bind("<Button-1>", self._on_status_click)
 
         ttk.Button(bottom, text="⚙ Settings", command=self._open_settings).grid(row=0, column=1, padx=(8, 0))
+
+    def _clear_transcript(self) -> None:
+        self._transcript.config(state=tk.NORMAL)
+        self._transcript.delete("1.0", tk.END)
+        self._transcript.config(state=tk.DISABLED)
+
+    def _append_transcript_line(self, text: str) -> None:
+        self._transcript.config(state=tk.NORMAL)
+        self._transcript.insert(tk.END, text + "\n")
+        self._transcript.see(tk.END)
+        self._transcript.config(state=tk.DISABLED)
+
+    def _poll_transcription(self) -> None:
+        while True:
+            try:
+                item = self._transcription_q.get_nowait()
+            except queue.Empty:
+                break
+            if item is None:
+                continue
+            if isinstance(item, str):
+                self._append_transcript_line(item)
+        self.root.after(150, self._poll_transcription)
 
     def _icon_path(self) -> str:
         base = app_dir()
@@ -420,6 +461,21 @@ class MainWindow:
         def on_convert_error(err: str) -> None:
             self.root.after(0, lambda: self._on_convert_error_ui(err))
 
+        trans_on = bool(self._config.get("transcription_enabled", False))
+        if trans_on:
+            while True:
+                try:
+                    self._transcription_q.get_nowait()
+                except queue.Empty:
+                    break
+            self._clear_transcript()
+
+        def on_model_loading() -> None:
+            self.root.after(0, lambda: self._append_transcript_line("[Loading Whisper model…]"))
+
+        def on_transcription_error(msg: str) -> None:
+            self.root.after(0, lambda m=msg: messagebox.showerror(APP_NAME, m))
+
         ok, err = self._engine.start(
             mi,
             oi,
@@ -429,6 +485,14 @@ class MainWindow:
             on_convert_start,
             on_convert_done,
             on_convert_error,
+            transcription_enabled=trans_on,
+            transcription_text_queue=self._transcription_q if trans_on else None,
+            transcription_model_size=str(self._config.get("transcription_model") or "base"),
+            transcription_device=str(self._config.get("transcription_device") or "cpu"),
+            transcription_compute_type=str(self._config.get("transcription_compute_type") or "int8"),
+            transcription_language=(self._config.get("transcription_language") or "") or None,
+            on_transcription_model_loading=on_model_loading if trans_on else None,
+            on_transcription_error=on_transcription_error if trans_on else None,
         )
         if not ok:
             messagebox.showerror(APP_NAME, err or "Failed to start recording.")

@@ -17,6 +17,11 @@ DEFAULTS: dict[str, Any] = {
     "global_hotkey_enabled": True,
     "last_input_device_id": None,
     "last_output_device_id": None,
+    "transcription_enabled": False,
+    "transcription_model": "base",
+    "transcription_device": "cpu",
+    "transcription_compute_type": "int8",
+    "transcription_language": "",
 }
 
 

@@ -28,6 +28,13 @@ On first run, settings are stored in `settings.json` next to the executable (or 
 - System tray (minimize on close optional), tray menu for show / record / stop / quit
 - Global hotkey **Ctrl+Shift+R** to start/stop recording (optional in Settings)
 - Single instance: starting again focuses the existing window
+- Optional **offline live transcript** during recording (**faster-whisper**): enable in **Settings**; text appears in the main window (chunked, ~3 s latency)
+
+### Live transcription
+
+1. `pip install -r requirements.txt` (includes `faster-whisper`, `numpy`; first run downloads the chosen Whisper model).
+2. **Settings** → enable **Live transcript**, pick **model** (e.g. `base` or `small`), **device** (`cpu` or `cuda`), **compute type** (`int8` on CPU, often `float16` on GPU).
+3. Start recording; lines append as each audio chunk is decoded. This is **near real-time** (not word-by-word streaming).
 
 ## Tests
 
@@ -52,6 +59,7 @@ Output: `dist\MeetingRecorder\` with `MeetingRecorder.exe` and dependencies.
 - **No microphone / privacy**: Windows **Settings → Privacy → Microphone** — allow access for desktop apps.
 - **PyAudioWPatch**: Wheels are **Windows-only**. Install fails on Linux or macOS by design.
 - **Devices**: Use **Refresh** if you plug in USB audio gear after launch.
+- **Transcription**: If import fails, install `faster-whisper`. GPU needs a CUDA-capable PyTorch setup; otherwise use **cpu** + **int8**.
 
 ## License
 

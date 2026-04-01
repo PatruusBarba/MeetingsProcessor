@@ -11,6 +11,7 @@ from typing import Callable
 import pyaudiowpatch as pyaudio
 
 from audio.devices import resolve_loopback_device
+from audio.stream_transcriber import LiveTranscriberThread
 from audio.loopback import LoopbackCaptureThread
 from audio.mic_capture import MicCaptureThread
 from audio.mp3_encoder import wav_to_mp3_mono
@@ -37,6 +38,7 @@ class WriterThread(threading.Thread):
         on_convert_start: Callable[[], None],
         on_convert_done: Callable[[str], None],
         on_convert_error: Callable[[str], None],
+        transcriber_audio_q: queue.Queue | None = None,
     ) -> None:
         super().__init__(daemon=True)
         self.mic_q = mic_q
@@ -51,6 +53,33 @@ class WriterThread(threading.Thread):
         self.on_convert_start = on_convert_start
         self.on_convert_done = on_convert_done
         self.on_convert_error = on_convert_error
+        self.transcriber_audio_q = transcriber_audio_q
+
+    def _feed_transcriber(self, mono_pcm: bytes) -> None:
+        if not self.transcriber_audio_q or not mono_pcm:
+            return
+        try:
+            self.transcriber_audio_q.put_nowait(mono_pcm)
+        except queue.Full:
+            pass
+
+    def _end_transcriber_feed(self) -> None:
+        if not self.transcriber_audio_q:
+            return
+        q = self.transcriber_audio_q
+        for _ in range(200):
+            try:
+                q.put_nowait(None)
+                return
+            except queue.Full:
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    time.sleep(0.01)
+        try:
+            q.put(None, timeout=2.0)
+        except queue.Full:
+            pass
 
     def run(self) -> None:
         writer = MonoWavWriter(self.wav_path, self.sample_rate)
@@ -58,6 +87,7 @@ class WriterThread(threading.Thread):
             writer.open()
         except OSError as e:
             self.on_disk_error(str(e))
+            self._end_transcriber_feed()
             return
 
         mic_buf = bytearray()
@@ -115,11 +145,14 @@ class WriterThread(threading.Thread):
                 out_chunk.extend(_mix_sample(a, b).to_bytes(2, "little", signed=True))
 
             if out_chunk:
+                raw = bytes(out_chunk)
                 try:
-                    writer.write_pcm(bytes(out_chunk))
+                    writer.write_pcm(raw)
+                    self._feed_transcriber(raw)
                 except OSError as e:
                     self.on_disk_error(str(e))
                     writer.close()
+                    self._end_transcriber_feed()
                     return
 
         while True:
@@ -133,14 +166,18 @@ class WriterThread(threading.Thread):
                 a = 0
             if b is None:
                 b = 0
+            seg = _mix_sample(a, b).to_bytes(2, "little", signed=True)
             try:
-                writer.write_pcm(_mix_sample(a, b).to_bytes(2, "little", signed=True))
+                writer.write_pcm(seg)
+                self._feed_transcriber(seg)
             except OSError as e:
                 self.on_disk_error(str(e))
                 writer.close()
+                self._end_transcriber_feed()
                 return
 
         writer.close()
+        self._end_transcriber_feed()
 
         if not os.path.isfile(self.wav_path):
             return
@@ -165,6 +202,8 @@ class RecordingEngine:
         self._mic_thread: MicCaptureThread | None = None
         self._loop_thread: LoopbackCaptureThread | None = None
         self._writer_thread: WriterThread | None = None
+        self._transcriber_thread: LiveTranscriberThread | None = None
+        self._transcriber_audio_q: queue.Queue | None = None
 
     def is_recording(self) -> bool:
         return self._stop_event is not None and not self._stop_event.is_set()
@@ -202,6 +241,15 @@ class RecordingEngine:
         on_convert_start: Callable[[], None],
         on_convert_done: Callable[[str], None],
         on_convert_error: Callable[[str], None],
+        *,
+        transcription_enabled: bool = False,
+        transcription_text_queue: queue.Queue | None = None,
+        transcription_model_size: str = "base",
+        transcription_device: str = "cpu",
+        transcription_compute_type: str = "int8",
+        transcription_language: str | None = None,
+        on_transcription_model_loading: Callable[[], None] | None = None,
+        on_transcription_error: Callable[[str], None] | None = None,
     ) -> tuple[bool, str | None]:
         lb = resolve_loopback_device(self.p_audio, output_device_index)
         if lb is None:
@@ -224,6 +272,24 @@ class RecordingEngine:
         self._paused_event = threading.Event()
         self._level_pair = [0, 0]
         self._error_box = []
+
+        trans_q: queue.Queue | None = None
+        if transcription_enabled and transcription_text_queue is not None:
+            trans_q = queue.Queue(maxsize=64)
+            self._transcriber_audio_q = trans_q
+            lang = (transcription_language or "").strip() or None
+            self._transcriber_thread = LiveTranscriberThread(
+                trans_q,
+                target_rate,
+                transcription_text_queue,
+                transcription_model_size,
+                transcription_device,
+                transcription_compute_type,
+                lang,
+                on_transcription_model_loading,
+                on_transcription_error,
+            )
+            self._transcriber_thread.start()
 
         self._mic_thread = MicCaptureThread(
             self.p_audio,
@@ -260,6 +326,7 @@ class RecordingEngine:
             on_convert_start,
             on_convert_done,
             on_convert_error,
+            transcriber_audio_q=trans_q,
         )
 
         self._writer_thread.start()
@@ -285,6 +352,9 @@ class RecordingEngine:
         if self._writer_thread:
             self._writer_thread.join(timeout=600.0)
 
+        if self._transcriber_thread:
+            self._transcriber_thread.join(timeout=600.0)
+
         self._mic_q = None
         self._loop_q = None
         self._stop_event = None
@@ -294,3 +364,5 @@ class RecordingEngine:
         self._mic_thread = None
         self._loop_thread = None
         self._writer_thread = None
+        self._transcriber_thread = None
+        self._transcriber_audio_q = None
