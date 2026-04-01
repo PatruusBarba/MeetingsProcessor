@@ -271,10 +271,16 @@ class RecordingEngine:
         if self._stop_event:
             self._stop_event.set()
 
+        # Unblock PortAudio read() so capture threads can exit and send queue sentinels.
+        if self._mic_thread and hasattr(self._mic_thread, "halt_stream"):
+            self._mic_thread.halt_stream()
+        if self._loop_thread and hasattr(self._loop_thread, "halt_stream"):
+            self._loop_thread.halt_stream()
+
         if self._mic_thread:
-            self._mic_thread.join(timeout=5.0)
+            self._mic_thread.join(timeout=15.0)
         if self._loop_thread:
-            self._loop_thread.join(timeout=5.0)
+            self._loop_thread.join(timeout=15.0)
 
         if self._writer_thread:
             self._writer_thread.join(timeout=600.0)

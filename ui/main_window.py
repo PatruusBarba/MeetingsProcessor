@@ -54,6 +54,7 @@ class MainWindow:
 
         self._last_saved_mp3: str | None = None
         self._converting = False
+        self._stop_in_progress = False
 
         self._tray_icon: pystray.Icon | None = None
         self._tray_thread: threading.Thread | None = None
@@ -474,11 +475,25 @@ class MainWindow:
             self._set_tray_state("paused")
 
     def _stop_recording(self) -> None:
-        if not self._engine.is_recording():
+        if not self._engine.is_recording() or self._stop_in_progress:
             return
-        self._engine.stop()
-        import time
+        self._stop_in_progress = True
 
+        self._stop_btn.config(state=tk.DISABLED)
+        self._pause_btn.config(state=tk.DISABLED)
+        if not self._converting:
+            self._status_var.set("Stopping…")
+
+        def work() -> None:
+            try:
+                self._engine.stop()
+            finally:
+                self.root.after(0, self._after_engine_stopped)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _after_engine_stopped(self) -> None:
+        self._stop_in_progress = False
         self._recording_started_monotonic = None
         self._paused_accum_sec = 0.0
         self._pause_started_monotonic = None

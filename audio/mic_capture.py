@@ -47,6 +47,18 @@ class MicCaptureThread(threading.Thread):
         self.stop_event = stop_event
         self.error_box = error_box
         self._stream = None
+        self._stream_lock = threading.Lock()
+
+    def halt_stream(self) -> None:
+        """Unblock a stuck read(); safe to call from another thread."""
+        with self._stream_lock:
+            s = self._stream
+        if s is None:
+            return
+        try:
+            s.stop_stream()
+        except OSError:
+            pass
 
     def run(self) -> None:
         channels = min(int(self.device_info.get("maxInputChannels", 1)), 2)
@@ -55,7 +67,7 @@ class MicCaptureThread(threading.Thread):
         native_rate = int(self.device_info.get("defaultSampleRate") or 44100)
         try:
             try:
-                self._stream = self.p_audio.open(
+                stream = self.p_audio.open(
                     format=pyaudio.paInt16,
                     channels=channels,
                     rate=native_rate,
@@ -63,6 +75,8 @@ class MicCaptureThread(threading.Thread):
                     input=True,
                     input_device_index=self.device_index,
                 )
+                with self._stream_lock:
+                    self._stream = stream
             except OSError as e:
                 self.error_box.append(("mic_open", str(e)))
                 return
@@ -87,13 +101,15 @@ class MicCaptureThread(threading.Thread):
                     break
         finally:
             self.level_pair[0] = 0
-            if self._stream:
+            with self._stream_lock:
+                s = self._stream
+                self._stream = None
+            if s:
                 try:
-                    self._stream.stop_stream()
-                    self._stream.close()
+                    s.stop_stream()
+                    s.close()
                 except OSError:
                     pass
-                self._stream = None
             try:
                 self.out_queue.put(None, timeout=5.0)
             except queue.Full:
