@@ -1,0 +1,4 @@
+PyAudioWPatch>=0.2.12.6
+lameenc>=1.7.0
+pystray>=0.19.5
+Pillow>=10.0.0
