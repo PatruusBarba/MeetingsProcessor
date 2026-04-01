@@ -29,6 +29,15 @@ On first run, settings are stored in `settings.json` next to the executable (or 
 - Global hotkey **Ctrl+Shift+R** to start/stop recording (optional in Settings)
 - Single instance: starting again focuses the existing window
 
+## Tests
+
+Pure-Python helpers (no WASAPI). From the repo root:
+
+```powershell
+$env:PYTHONPATH = "."
+python -m unittest discover -s tests -p "test*.py" -v
+```
+
 ## Build a standalone folder (PyInstaller)
 
 ```powershell
