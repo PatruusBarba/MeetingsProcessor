@@ -12,14 +12,8 @@ MIX_CHUNK_SAMPLES = 1024
 FALLBACK_SAMPLE_RATE = 44100
 MP3_BITRATE_KBPS = 128
 
-# Windows message for custom hotkey (WM_HOTKEY = 0x0312)
-WM_HOTKEY = 0x0312
-
 # Single-instance mutex name (global)
 SINGLE_INSTANCE_MUTEX_NAME = "Local\\MeetingAudioRecorder_SingleInstance_v1"
-
-# Hotkey (RegisterHotKey virtual-key code for 'R')
-VK_R = 0x52
 
 
 def is_frozen() -> bool:

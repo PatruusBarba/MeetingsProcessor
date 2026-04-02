@@ -26,7 +26,7 @@ On first run, settings are stored in `settings.json` next to the executable (or 
 - Live timer and level meters
 - MP3 export via **lameenc** (128 kbps mono); intermediate WAV is removed after encoding
 - System tray (minimize on close optional), tray menu for show / record / stop / quit
-- Global hotkey **Ctrl+Shift+R** to start/stop recording (optional in Settings)
+- Global hotkey **Ctrl+Shift+R** to start/stop recording (optional in Settings; polled from the GUI thread so it stays stable with PyAudio)
 - Single instance: starting again focuses the existing window
 - Optional **offline live transcript** during recording (**faster-whisper**): enable in **Settings**; text appears in the main window (chunked, ~3 s latency)
 

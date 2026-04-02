@@ -20,11 +20,9 @@ from audio.engine import RecordingEngine
 from ui.settings_dialog import SettingsDialog
 from utils.config import load_config, save_config
 from utils.constants import APP_NAME, app_dir
-from utils.hotkeys import GlobalHotkey
 
 if sys.platform == "win32":
-    from utils.win32_hwnd import tk_root_hwnd
-    from utils.win32_wndproc import WndProcHook
+    from utils.win32_hotkey_poll import poll_ctrl_shift_r_edge
 
 if TYPE_CHECKING:
     import pyaudiowpatch as pyaudio
@@ -62,8 +60,8 @@ class MainWindow:
         self._tray_thread: threading.Thread | None = None
         self._tray_state = "idle"
 
-        self._hotkey = GlobalHotkey()
-        self._wndproc_hook: WndProcHook | None = None
+        self._hotkey_combo_down = False
+        self._hotkey_after_id: str | None = None
 
         self._build_ui()
         self._refresh_devices(select_saved=True)
@@ -74,7 +72,7 @@ class MainWindow:
         self._poll_engine_errors()
 
         if self._config.get("global_hotkey_enabled", True):
-            self._setup_hotkey()
+            self._start_hotkey_polling()
 
         if self._config.get("start_minimized", False):
             root.after(200, self._minimize_to_tray)
@@ -185,36 +183,35 @@ class MainWindow:
             return ico
         return os.path.join(os.path.dirname(os.path.dirname(__file__)), "assets", "icon.ico")
 
-    def _setup_hotkey(self) -> None:
+    def _start_hotkey_polling(self) -> None:
+        """Poll Ctrl+Shift+R from the tk main thread only (avoids GIL crash with PyAudio)."""
         if sys.platform != "win32":
             return
-        self.root.update_idletasks()
-        try:
-            hwnd = tk_root_hwnd(self.root)
-        except Exception:
-            return
+        self._stop_hotkey_polling()
+        self._hotkey_combo_down = False
 
-        def on_hotkey():
-            self.root.after(0, self._toggle_recording_hotkey)
+        def tick() -> None:
+            if not self._config.get("global_hotkey_enabled", True):
+                self._hotkey_after_id = None
+                return
+            fired, self._hotkey_combo_down = poll_ctrl_shift_r_edge(self._hotkey_combo_down)
+            if fired and not self._converting:
+                self._toggle_recording_hotkey()
+            self._hotkey_after_id = self.root.after(100, tick)
 
-        if self._wndproc_hook:
-            self._wndproc_hook.uninstall()
-        self._wndproc_hook = WndProcHook(hwnd, on_hotkey)
-        self._wndproc_hook.install()
-        if not self._hotkey.register(hwnd):
-            self._status_var.set("Could not register global hotkey (may be in use).")
+        self._hotkey_after_id = self.root.after(100, tick)
+
+    def _stop_hotkey_polling(self) -> None:
+        if self._hotkey_after_id is not None:
+            try:
+                self.root.after_cancel(self._hotkey_after_id)
+            except tk.TclError:
+                pass
+            self._hotkey_after_id = None
+        self._hotkey_combo_down = False
 
     def _teardown_hotkey(self) -> None:
-        if sys.platform != "win32":
-            return
-        try:
-            hwnd = tk_root_hwnd(self.root)
-        except Exception:
-            hwnd = 0
-        self._hotkey.unregister(hwnd)
-        if self._wndproc_hook:
-            self._wndproc_hook.uninstall()
-            self._wndproc_hook = None
+        self._stop_hotkey_polling()
 
     def _tray_image(self, state: str) -> Image.Image:
         size = 64
@@ -305,7 +302,7 @@ class MainWindow:
     def _on_settings_saved(self, cfg: dict) -> None:
         self._config = cfg
         if cfg.get("global_hotkey_enabled", True):
-            self._setup_hotkey()
+            self._start_hotkey_polling()
         else:
             self._teardown_hotkey()
 
