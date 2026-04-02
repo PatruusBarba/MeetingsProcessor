@@ -6,6 +6,7 @@ dist/
 build/
 *.spec.bak
 settings.json
+transcription_debug.log
 recordings/
 models/
 .venv/

@@ -132,7 +132,14 @@ class MainWindow:
         trans_lf = ttk.LabelFrame(self.root, text="Live transcript (Parakeet ONNX, offline)", padding=8)
         trans_lf.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 4))
         trans_lf.columnconfigure(0, weight=1)
-        trans_lf.rowconfigure(0, weight=1)
+        trans_lf.rowconfigure(2, weight=1)
+        self._transcript_phase = tk.StringVar(value="Transcription: idle.")
+        ttk.Label(trans_lf, textvariable=self._transcript_phase, wraplength=520, justify=tk.LEFT).grid(
+            row=0, column=0, sticky="ew", pady=(0, 4)
+        )
+        self._transcript_load = ttk.Progressbar(trans_lf, mode="indeterminate", length=400)
+        self._transcript_load.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        self._transcript_load.grid_remove()
         self._transcript = scrolledtext.ScrolledText(
             trans_lf,
             height=10,
@@ -140,7 +147,7 @@ class MainWindow:
             font=("Segoe UI", 10) if sys.platform == "win32" else ("TkDefaultFont", 10),
             state=tk.DISABLED,
         )
-        self._transcript.grid(row=0, column=0, sticky="nsew")
+        self._transcript.grid(row=2, column=0, sticky="nsew")
 
         bottom = ttk.Frame(self.root, padding=(12, 0, 12, 12))
         bottom.grid(row=2, column=0, sticky="ew")
@@ -165,6 +172,15 @@ class MainWindow:
         self._transcript.see(tk.END)
         self._transcript.config(state=tk.DISABLED)
 
+    def _set_transcript_phase_ui(self, msg: str, loading: bool) -> None:
+        self._transcript_phase.set(msg)
+        if loading:
+            self._transcript_load.grid()
+            self._transcript_load.start(12)
+        else:
+            self._transcript_load.stop()
+            self._transcript_load.grid_remove()
+
     def _poll_transcription(self) -> None:
         while True:
             try:
@@ -172,8 +188,29 @@ class MainWindow:
             except queue.Empty:
                 break
             if item is None:
+                self._set_transcript_phase_ui("Transcription: idle.", loading=False)
                 continue
-            if isinstance(item, str):
+            if isinstance(item, tuple) and len(item) == 2:
+                kind, payload = item
+                if kind == "phase":
+                    low = payload.lower()
+                    if "ready" in low and "capturing" in low:
+                        loading = False
+                    else:
+                        loading = any(
+                            x in low
+                            for x in (
+                                "loading",
+                                "reading",
+                                "checking",
+                                "decoding",
+                                "stopping",
+                            )
+                        )
+                    self._set_transcript_phase_ui(payload, loading=loading)
+                elif kind == "text":
+                    self._set_transcript_text(payload)
+            elif isinstance(item, str):
                 self._set_transcript_text(item)
         self.root.after(120, self._poll_transcription)
 
@@ -469,10 +506,23 @@ class MainWindow:
             self._clear_transcript()
 
         def on_model_loading() -> None:
-            self.root.after(0, lambda: self._set_transcript_text("[Loading ONNX models from folder…]"))
+            self.root.after(
+                0,
+                lambda: self._set_transcript_phase_ui(
+                    "Transcription: loading ONNX into RAM (see status below; can take 1–2 min)…",
+                    loading=True,
+                ),
+            )
 
         def on_transcription_error(msg: str) -> None:
-            self.root.after(0, lambda m=msg: messagebox.showerror(APP_NAME, m))
+            def _err(m: str) -> None:
+                self._set_transcript_phase_ui(f"Transcription error: {m[:200]}", loading=False)
+                messagebox.showerror(APP_NAME, m)
+
+            self.root.after(0, lambda m=msg: _err(m))
+
+        def on_transcription_status(msg: str) -> None:
+            self.root.after(0, lambda m=msg: self._set_transcript_phase_ui(m, loading=True))
 
         ok, err = self._engine.start(
             mi,
@@ -490,6 +540,7 @@ class MainWindow:
             transcription_refresh_sec=float(self._config.get("transcription_refresh_sec") or 0.35),
             on_transcription_model_loading=on_model_loading if trans_on else None,
             on_transcription_error=on_transcription_error if trans_on else None,
+            on_transcription_status=on_transcription_status if trans_on else None,
         )
         if not ok:
             messagebox.showerror(APP_NAME, err or "Failed to start recording.")

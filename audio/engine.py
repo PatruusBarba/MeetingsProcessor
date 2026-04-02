@@ -250,6 +250,7 @@ class RecordingEngine:
         transcription_refresh_sec: float = 0.35,
         on_transcription_model_loading: Callable[[], None] | None = None,
         on_transcription_error: Callable[[str], None] | None = None,
+        on_transcription_status: Callable[[str], None] | None = None,
     ) -> tuple[bool, str | None]:
         lb = resolve_loopback_device(self.p_audio, output_device_index)
         if lb is None:
@@ -278,7 +279,8 @@ class RecordingEngine:
             mdir = resolve_transcription_model_dir(transcription_model_dir)
             if not is_bundle_complete(mdir):
                 return False, "Transcription: download the ONNX model in Settings first."
-            trans_q = queue.Queue(maxsize=128)
+            # Unbounded: while ONNX sessions load (can take tens of seconds), writer must not block/drop audio.
+            trans_q = queue.Queue()
             self._transcriber_audio_q = trans_q
             self._transcriber_thread = OnnxParakeetLiveTranscriberThread(
                 trans_q,
@@ -289,6 +291,7 @@ class RecordingEngine:
                 transcription_refresh_sec,
                 on_transcription_model_loading,
                 on_transcription_error,
+                on_transcription_status,
             )
             self._transcriber_thread.start()
 

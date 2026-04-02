@@ -1,10 +1,12 @@
 """
-Live transcription with INT8 ONNX Parakeet TDT V3 (same layout as smcleod/parakeet-tdt-0.6b-v3-int8
-and local folders: nemo128.onnx, encoder-model.int8.onnx, decoder_joint-model.int8.onnx, vocab.txt).
+Live transcription with INT8 ONNX Parakeet TDT V3.
 
-No NeMo / PyTorch. ONNX Runtime + TDT greedy decode (same logic as nano-parakeet).
-Encoder ONNX is full-sequence: we re-run mel+encoder on growing 16 kHz PCM, throttled by
-``min_interval_sec`` so the transcript updates smoothly without re-decoding every tiny chunk.
+Puts (str, str) tuples on text_queue:
+  ("phase", message)  — load step / state (UI shows in status line + log file)
+  ("text", message)   — full current transcript hypothesis
+  None                — thread finished
+
+Loads ONNX sessions *before* reading audio so the writer never blocks on a full queue.
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ import time
 from typing import Callable
 
 import numpy as np
+
+from utils.transcription_log import log_line
 
 BLANK_ID = 8192
 DURATIONS = [0, 1, 2, 3, 4]
@@ -93,6 +97,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         min_interval_sec: float,
         on_model_loading: Callable[[], None] | None,
         on_error: Callable[[str], None] | None,
+        on_status: Callable[[str], None] | None,
     ) -> None:
         super().__init__(daemon=True)
         self.audio_queue = audio_queue
@@ -100,60 +105,95 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         self.text_queue = text_queue
         self.model_dir = os.path.abspath(model_dir)
         self.device = device
-        self.min_interval_sec = max(0.12, float(min_interval_sec))
+        self.min_interval_sec = max(0.08, float(min_interval_sec))
         self.on_model_loading = on_model_loading
         self.on_error = on_error
+        self.on_status = on_status
+
+    def _phase(self, msg: str) -> None:
+        log_line(f"[transcriber] {msg}")
+        try:
+            self.text_queue.put_nowait(("phase", msg))
+        except queue.Full:
+            pass
+        if self.on_status:
+            self.on_status(msg)
+
+    def _text_out(self, msg: str) -> None:
+        try:
+            self.text_queue.put_nowait(("text", msg))
+        except queue.Full:
+            pass
 
     def run(self) -> None:
+        log_line("[transcriber] thread started")
+
+        def fail(msg: str) -> None:
+            log_line(f"[transcriber] ERROR {msg}")
+            self._phase(msg)
+            if self.on_error:
+                self.on_error(msg)
+            try:
+                self.text_queue.put_nowait(None)
+            except queue.Full:
+                pass
+
         try:
             import onnxruntime as ort
         except ImportError:
-            if self.on_error:
-                self.on_error(
-                    "Install ONNX Runtime:\n  pip install onnxruntime\n"
-                    "For NVIDIA GPU: pip install onnxruntime-gpu"
-                )
-            self.text_queue.put(None)
+            fail(
+                "Missing onnxruntime. Run: pip install onnxruntime\n"
+                "(GPU: pip install onnxruntime-gpu)"
+            )
             return
 
         mel_path = os.path.join(self.model_dir, "nemo128.onnx")
         enc_path = os.path.join(self.model_dir, "encoder-model.int8.onnx")
         dec_path = os.path.join(self.model_dir, "decoder_joint-model.int8.onnx")
         vocab_path = os.path.join(self.model_dir, "vocab.txt")
+
+        self._phase("Checking model files…")
         for p in (mel_path, enc_path, dec_path, vocab_path):
             if not os.path.isfile(p):
-                if self.on_error:
-                    self.on_error(
-                        f"Missing file in model folder:\n{p}\n\n"
-                        "Need: nemo128.onnx, encoder-model.int8.onnx, "
-                        "decoder_joint-model.int8.onnx, vocab.txt"
-                    )
-                self.text_queue.put(None)
+                fail(
+                    f"Missing model file:\n{p}\n\n"
+                    "Use Settings → Download model, or pick a folder with all four ONNX files."
+                )
                 return
 
         if self.on_model_loading:
             self.on_model_loading()
 
+        self._phase("Reading vocabulary…")
         try:
             id_to_piece = _load_vocab_txt(vocab_path)
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Failed to read vocab.txt: {e}")
-            self.text_queue.put(None)
+            fail(f"vocab.txt: {e}")
             return
 
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         providers = _ort_providers(self.device)
+        self._phase(f"Loading ONNX into memory (providers: {providers}) — mel preprocessor…")
+        log_line(f"[transcriber] providers={providers}")
+
         try:
+            t0 = time.perf_counter()
             mel_sess = ort.InferenceSession(mel_path, so, providers=providers)
+            log_line(f"[transcriber] mel session ready in {time.perf_counter()-t0:.1f}s")
+            self._phase("Loading encoder (~650 MB, can take 30–90 s on HDD)…")
+            t0 = time.perf_counter()
             enc_sess = ort.InferenceSession(enc_path, so, providers=providers)
+            log_line(f"[transcriber] encoder session ready in {time.perf_counter()-t0:.1f}s")
+            self._phase("Loading decoder / joint…")
+            t0 = time.perf_counter()
             dec_sess = ort.InferenceSession(dec_path, so, providers=providers)
+            log_line(f"[transcriber] decoder session ready in {time.perf_counter()-t0:.1f}s")
         except Exception as e:
-            if self.on_error:
-                self.on_error(f"Failed to load ONNX: {e}\nProviders tried: {providers}")
-            self.text_queue.put(None)
+            fail(f"ONNX load failed: {e}")
             return
+
+        self._phase("Model ready — capturing audio…")
 
         def tdt_greedy(enc_full: np.ndarray) -> list[int]:
             t = int(enc_full.shape[2])
@@ -216,19 +256,30 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         pcm_16k_buf = np.array([], dtype=np.float32)
         last_decode = 0.0
         last_text = ""
+        decode_count = 0
 
         def maybe_decode(force: bool) -> None:
-            nonlocal last_decode, last_text
+            nonlocal last_decode, last_text, decode_count
             now = time.monotonic()
             if pcm_16k_buf.size < 1600 and not force:
                 return
             if not force and (now - last_decode) < self.min_interval_sec:
                 return
-            text = run_decode(pcm_16k_buf)
+            log_line(f"[transcriber] decode start, buffer {pcm_16k_buf.size} samples (~{pcm_16k_buf.size/16000:.1f}s)")
+            t0 = time.perf_counter()
+            try:
+                text = run_decode(pcm_16k_buf)
+            except Exception as e:
+                log_line(f"[transcriber] decode error {e}")
+                self._phase(f"Decode error: {e}")
+                return
+            dt = time.perf_counter() - t0
+            decode_count += 1
+            log_line(f"[transcriber] decode #{decode_count} {dt:.2f}s -> {len(text)} chars")
             last_decode = now
             if text != last_text:
                 last_text = text
-                self.text_queue.put(text)
+                self._text_out(text if text else "…")
 
         try:
             while True:
@@ -238,6 +289,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                     maybe_decode(force=False)
                     continue
                 if item is None:
+                    self._phase("Stopping — final decode…")
                     maybe_decode(force=True)
                     break
                 f32 = _pcm16_to_f32_mono(item)
@@ -247,7 +299,12 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                     pcm_16k_buf = np.concatenate([pcm_16k_buf, f32])
                 maybe_decode(force=False)
         except Exception as e:
+            log_line(f"[transcriber] loop error {e}")
             if self.on_error:
-                self.on_error(f"ONNX transcription error: {e}")
+                self.on_error(f"Transcription: {e}")
         finally:
-            self.text_queue.put(None)
+            log_line("[transcriber] thread exit")
+            try:
+                self.text_queue.put_nowait(None)
+            except queue.Full:
+                pass
