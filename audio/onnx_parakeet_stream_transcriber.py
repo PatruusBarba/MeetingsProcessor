@@ -1,11 +1,10 @@
 """
-Live Parakeet TDT INT8 ONNX — sliding-window segments (standard streaming ASR).
+Live Parakeet TDT INT8 ONNX with VAD-gated utterances (not fixed 30 s cuts).
 
-Re-decode on the entire growing buffer fails on long audio with this export (log: full_len=0).
-We decode fixed-length 16 kHz windows with overlap and merge text — same idea as chunked
-inference in NeMo / live captioning.
-
-Queue: ("phase", str), ("append", str), None
+- Audio from the recorder is always buffered in parallel (decode never blocks capture).
+- Accumulate 16 kHz PCM until at least min_utterance_sec; skip decode if no speech (webrtcvad + energy fallback).
+- Close utterance on end_silence_sec of trailing silence, or at max_utterance_sec (safety cap).
+- Queue: ("phase", str), ("append", str), None
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ from typing import Callable
 
 import numpy as np
 
+from utils.speech_vad import FRAME_SAMPLES, UtteranceVAD
 from utils.transcription_log import log_line
 
 BLANK_ID = 8192
@@ -26,7 +26,7 @@ DURATIONS = [0, 1, 2, 3, 4]
 N_DUR = len(DURATIONS)
 
 SR = 16_000
-MIN_DECODE_SAMPLES = 4_000  # 0.25 s minimum for a tail decode
+MIN_DECODE_SAMPLES = 4_000
 
 
 def _pcm16_to_f32_mono(mono_bytes: bytes) -> np.ndarray:
@@ -76,7 +76,6 @@ def _decode_ids(ids: list[int], id_to_piece: dict[int, str]) -> str:
 
 
 def _merge_segment(accumulated: str, seg: str) -> str:
-    """Join new chunk text; strip duplicate overlap at boundary (same audio in two windows)."""
     a = accumulated.rstrip()
     seg = seg.strip()
     if not seg:
@@ -112,8 +111,10 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         text_queue: queue.Queue,
         model_dir: str,
         device: str,
-        segment_sec: float,
-        overlap_sec: float,
+        min_utterance_sec: float,
+        max_utterance_sec: float,
+        end_silence_sec: float,
+        vad_aggressiveness: int,
         on_model_loading: Callable[[], None] | None,
         on_error: Callable[[str], None] | None,
         on_status: Callable[[str], None] | None,
@@ -124,9 +125,10 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         self.text_queue = text_queue
         self.model_dir = os.path.abspath(model_dir)
         self.device = device
-        self.chunk_samples = max(int(float(segment_sec) * SR), 8000)
-        ov = max(0.0, min(float(overlap_sec), float(segment_sec) * 0.45))
-        self.advance_samples = max(self.chunk_samples // 4, self.chunk_samples - int(ov * SR))
+        self.min_samples = max(int(float(min_utterance_sec) * SR), 8_000)
+        self.max_samples = max(int(float(max_utterance_sec) * SR), self.min_samples + 8_000)
+        self.end_silence_sec = max(0.25, float(end_silence_sec))
+        self.vad = UtteranceVAD(aggressiveness=vad_aggressiveness)
         self.on_model_loading = on_model_loading
         self.on_error = on_error
         self.on_status = on_status
@@ -150,7 +152,8 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
 
     def run(self) -> None:
         log_line(
-            f"[transcriber] start sliding window chunk={self.chunk_samples} adv={self.advance_samples} ({self.chunk_samples/SR:.1f}s)"
+            f"[transcriber] VAD utterances min={self.min_samples/SR:.1f}s max={self.max_samples/SR:.1f}s "
+            f"end_silence={self.end_silence_sec}s"
         )
 
         def fail(msg: str) -> None:
@@ -205,9 +208,8 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
             fail(f"ONNX load failed: {e}")
             return
 
-        self._phase(
-            f"Listening — {self.chunk_samples/SR:.1f}s segments, overlap ~{(self.chunk_samples-self.advance_samples)/SR:.1f}s…"
-        )
+        vad_note = "webrtcvad" if self.vad._vad is not None else "energy VAD (pip install webrtcvad)"
+        self._phase(f"Listening — utterances by silence ({vad_note}), min {self.min_samples/SR:.0f}s…")
 
         def tdt_greedy(enc_full: np.ndarray) -> list[int]:
             t = int(enc_full.shape[2])
@@ -259,9 +261,9 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
             n = int(pcm.size)
             if n < 800:
                 return ""
-            if n < self.chunk_samples:
-                pad = np.zeros(self.chunk_samples - n, dtype=np.float32)
-                pcm = np.concatenate([pcm, pad])
+            pad_to = max(n, 8_000)
+            if n < pad_to:
+                pcm = np.concatenate([pcm, np.zeros(pad_to - n, dtype=np.float32)])
             wav = pcm.reshape(1, -1).astype(np.float32)
             wl = np.array([wav.shape[1]], dtype=np.int64)
             feat, fl = mel_sess.run(None, {"waveforms": wav, "waveforms_lens": wl})
@@ -271,59 +273,100 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
             ids = tdt_greedy(enc_out)
             return _decode_ids(ids, id_to_piece)
 
-        buf = np.array([], dtype=np.float32)
+        speech_buf = np.array([], dtype=np.float32)
         transcript = ""
         seg_i = 0
 
-        def process_sliding(final: bool) -> None:
-            nonlocal buf, transcript, seg_i
-            while buf.size >= self.chunk_samples or (final and buf.size >= MIN_DECODE_SAMPLES):
-                if buf.size < self.chunk_samples:
-                    chunk = buf.copy()
-                else:
-                    chunk = buf[: self.chunk_samples].copy()
-                t0 = time.perf_counter()
-                text = run_decode_pcm(chunk)
-                dt = time.perf_counter() - t0
-                seg_i += 1
-                log_line(
-                    f"[transcriber] seg #{seg_i} samples={chunk.size} {dt:.2f}s text_len={len(text)}"
-                )
-                if text:
-                    old = transcript
-                    transcript = _merge_segment(transcript, text)
-                    if transcript != old:
-                        if transcript.startswith(old):
-                            delta = transcript[len(old) :].lstrip()
-                        else:
-                            delta = transcript
-                        if delta:
-                            self._append_out(delta)
-                if buf.size >= self.chunk_samples:
-                    buf = buf[self.advance_samples :].copy()
-                elif final:
-                    buf = np.array([], dtype=np.float32)
-                    break
-            if final and buf.size > 0 and buf.size < MIN_DECODE_SAMPLES:
-                buf = np.array([], dtype=np.float32)
+        def try_flush_utterance(force_tail: bool) -> None:
+            nonlocal speech_buf, transcript, seg_i
+            n = int(speech_buf.size)
+            if n < self.min_samples and not (force_tail and n >= MIN_DECODE_SAMPLES):
+                return
+
+            if n >= self.min_samples and not self.vad.any_speech(speech_buf):
+                log_line(f"[transcriber] skip silent buffer {n/SR:.1f}s")
+                speech_buf = np.array([], dtype=np.float32)
+                return
+
+            trail_sil = self.vad.trailing_silence_seconds(speech_buf)
+            hit_max = n >= self.max_samples
+            hit_pause = trail_sil >= self.end_silence_sec and n >= self.min_samples
+
+            if not force_tail and not hit_max and not hit_pause:
+                return
+
+            chunk: np.ndarray
+            rest: np.ndarray
+
+            if hit_max and not hit_pause and not force_tail:
+                cut = self.max_samples
+                chunk = speech_buf[:cut].copy()
+                rest = speech_buf[cut:].copy()
+            elif hit_pause and not force_tail:
+                sil_samples = int(round(trail_sil * SR))
+                sil_samples = min(sil_samples, n - self.min_samples)
+                sil_samples = max(0, (sil_samples // FRAME_SAMPLES) * FRAME_SAMPLES)
+                cut = n - sil_samples
+                if cut < self.min_samples:
+                    return
+                chunk = speech_buf[:cut].copy()
+                chunk = self.vad.trim_trailing_silence(chunk)
+                rest = speech_buf[cut:].copy()
+            else:
+                chunk = speech_buf.copy()
+                rest = np.array([], dtype=np.float32)
+
+            chunk = self.vad.trim_leading_silence(chunk, max_trim_sec=2.0)
+            if chunk.size < MIN_DECODE_SAMPLES:
+                speech_buf = np.concatenate([chunk, rest]) if chunk.size or rest.size else rest
+                return
+
+            t0 = time.perf_counter()
+            text = run_decode_pcm(chunk)
+            dt = time.perf_counter() - t0
+            seg_i += 1
+            log_line(
+                f"[transcriber] utt #{seg_i} samples={chunk.size} ({chunk.size/SR:.1f}s) {dt:.2f}s text_len={len(text)}"
+            )
+            if text:
+                old = transcript
+                transcript = _merge_segment(transcript, text)
+                if transcript != old:
+                    delta = transcript[len(old) :].lstrip() if transcript.startswith(old) else transcript
+                    if delta:
+                        self._append_out(delta)
+            speech_buf = rest
 
         try:
             while True:
                 try:
                     item = self.audio_queue.get(timeout=0.2)
                 except queue.Empty:
-                    process_sliding(final=False)
+                    try_flush_utterance(force_tail=False)
                     continue
                 if item is None:
-                    self._phase("Final segments…")
-                    process_sliding(final=True)
+                    self._phase("Final utterance…")
+                    try_flush_utterance(force_tail=True)
+                    if speech_buf.size >= MIN_DECODE_SAMPLES:
+                        if self.vad.any_speech(speech_buf):
+                            t0 = time.perf_counter()
+                            text = run_decode_pcm(self.vad.trim_leading_silence(speech_buf, 2.0))
+                            log_line(f"[transcriber] final tail {time.perf_counter()-t0:.2f}s len={len(text)}")
+                            if text:
+                                old = transcript
+                                transcript = _merge_segment(transcript, text)
+                                if transcript != old:
+                                    d = transcript[len(old) :].lstrip() if transcript.startswith(old) else transcript
+                                    if d:
+                                        self._append_out(d)
+                    speech_buf = np.array([], dtype=np.float32)
                     break
                 f32 = _pcm16_to_f32_mono(item)
                 if self.sample_rate_in != SR:
                     f32 = _resample_linear(f32, self.sample_rate_in, SR)
                 if f32.size:
-                    buf = np.concatenate([buf, f32])
-                process_sliding(final=False)
+                    speech_buf = np.concatenate([speech_buf, f32])
+                try_flush_utterance(force_tail=False)
         except Exception as e:
             log_line(f"[transcriber] loop error {e}")
             if self.on_error:

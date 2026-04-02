@@ -152,21 +152,37 @@ class SettingsDialog(tk.Toplevel):
         ).grid(row=row, column=1, sticky="w", padx=(8, 0))
         row += 1
 
-        ttk.Label(frm, text="Live segment length (sec):").grid(row=row, column=0, sticky="w")
-        self._seg_var = tk.StringVar(value=str(self._config.get("transcription_segment_sec", 3.0)))
-        ttk.Entry(frm, textvariable=self._seg_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(frm, text="Min utterance before decode (sec):").grid(row=row, column=0, sticky="w")
+        self._min_u_var = tk.StringVar(value=str(self._config.get("transcription_min_utterance_sec", 10.0)))
+        ttk.Entry(frm, textvariable=self._min_u_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
         row += 1
 
-        ttk.Label(frm, text="Overlap (sec):").grid(row=row, column=0, sticky="w")
-        self._ov_var = tk.StringVar(value=str(self._config.get("transcription_overlap_sec", 0.75)))
-        ttk.Entry(frm, textvariable=self._ov_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(frm, text="Max utterance / hard split (sec):").grid(row=row, column=0, sticky="w")
+        self._max_u_var = tk.StringVar(value=str(self._config.get("transcription_max_utterance_sec", 60.0)))
+        ttk.Entry(frm, textvariable=self._max_u_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
+        row += 1
+
+        ttk.Label(frm, text="End silence to close utterance (sec):").grid(row=row, column=0, sticky="w")
+        self._sil_var = tk.StringVar(value=str(self._config.get("transcription_end_silence_sec", 0.8)))
+        ttk.Entry(frm, textvariable=self._sil_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
+        row += 1
+
+        ttk.Label(frm, text="VAD aggressiveness (0–3):").grid(row=row, column=0, sticky="w")
+        self._vad_var = tk.StringVar(value=str(self._config.get("transcription_vad_aggressiveness", 2)))
+        ttk.Combobox(
+            frm,
+            textvariable=self._vad_var,
+            values=("0", "1", "2", "3"),
+            width=8,
+            state="readonly",
+        ).grid(row=row, column=1, sticky="w", padx=(8, 0))
         row += 1
 
         hint = ttk.Label(
             frm,
             text=(
-                "Live ASR uses short sliding windows (not one giant decode). "
-                "Smaller segment = more updates, more CPU. Requires onnxruntime."
+                "Utterances grow while someone speaks; they end after silence or at max length. "
+                "Silent buffers are skipped. Install webrtcvad for best VAD (pip install webrtcvad)."
             ),
             font=("TkDefaultFont", 8),
             foreground="gray",
@@ -290,13 +306,29 @@ class SettingsDialog(tk.Toplevel):
             self._config["transcription_model_dir"] = ""
         self._config["transcription_device"] = self._dev_var.get().strip() or "cpu"
         try:
-            self._config["transcription_segment_sec"] = float(self._seg_var.get().strip() or "3")
+            self._config["transcription_min_utterance_sec"] = max(1.0, float(self._min_u_var.get().strip() or "10"))
         except ValueError:
-            self._config["transcription_segment_sec"] = 3.0
+            self._config["transcription_min_utterance_sec"] = 10.0
         try:
-            self._config["transcription_overlap_sec"] = float(self._ov_var.get().strip() or "0.75")
+            self._config["transcription_max_utterance_sec"] = max(
+                self._config["transcription_min_utterance_sec"] + 1.0,
+                float(self._max_u_var.get().strip() or "60"),
+            )
         except ValueError:
-            self._config["transcription_overlap_sec"] = 0.75
+            self._config["transcription_max_utterance_sec"] = 60.0
+        try:
+            self._config["transcription_end_silence_sec"] = max(0.1, float(self._sil_var.get().strip() or "0.8"))
+        except ValueError:
+            self._config["transcription_end_silence_sec"] = 0.8
+        try:
+            self._config["transcription_vad_aggressiveness"] = int(
+                float(self._vad_var.get().strip() or "2")
+            )
+        except ValueError:
+            self._config["transcription_vad_aggressiveness"] = 2
+        self._config["transcription_vad_aggressiveness"] = max(
+            0, min(3, int(self._config["transcription_vad_aggressiveness"]))
+        )
         save_config(self._config)
         self._on_saved(self._config)
         self.destroy()
