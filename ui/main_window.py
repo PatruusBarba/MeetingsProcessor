@@ -55,6 +55,7 @@ class MainWindow:
         self._converting = False
         self._stop_in_progress = False
         self._transcription_q: queue.Queue = queue.Queue()
+        self._ignore_transcript_phase_updates = False
 
         self._tray_icon: pystray.Icon | None = None
         self._tray_thread: threading.Thread | None = None
@@ -172,6 +173,12 @@ class MainWindow:
         self._transcript.see(tk.END)
         self._transcript.config(state=tk.DISABLED)
 
+    def _append_transcript_fragment(self, fragment: str) -> None:
+        self._transcript.config(state=tk.NORMAL)
+        self._transcript.insert(tk.END, fragment)
+        self._transcript.see(tk.END)
+        self._transcript.config(state=tk.DISABLED)
+
     def _set_transcript_phase_ui(self, msg: str, loading: bool) -> None:
         self._transcript_phase.set(msg)
         if loading:
@@ -188,13 +195,18 @@ class MainWindow:
             except queue.Empty:
                 break
             if item is None:
+                self._ignore_transcript_phase_updates = False
                 self._set_transcript_phase_ui("Transcription: idle.", loading=False)
                 continue
             if isinstance(item, tuple) and len(item) == 2:
                 kind, payload = item
                 if kind == "phase":
+                    if self._ignore_transcript_phase_updates:
+                        continue
                     low = payload.lower()
-                    if "ready" in low and "capturing" in low:
+                    if "ready" in low and "listening" in low:
+                        loading = False
+                    elif "finished" in low:
                         loading = False
                     else:
                         loading = any(
@@ -203,11 +215,12 @@ class MainWindow:
                                 "loading",
                                 "reading",
                                 "checking",
-                                "decoding",
-                                "stopping",
+                                "final pass",
                             )
                         )
                     self._set_transcript_phase_ui(payload, loading=loading)
+                elif kind == "append":
+                    self._append_transcript_fragment(payload)
                 elif kind == "text":
                     self._set_transcript_text(payload)
             elif isinstance(item, str):
@@ -595,6 +608,9 @@ class MainWindow:
         self._pause_btn.config(state=tk.DISABLED)
         if not self._converting:
             self._status_var.set("Stopping…")
+        if self._config.get("transcription_enabled", False):
+            self._ignore_transcript_phase_updates = True
+            self._set_transcript_phase_ui("Recording stopped — finishing transcript…", loading=False)
 
         def work() -> None:
             try:

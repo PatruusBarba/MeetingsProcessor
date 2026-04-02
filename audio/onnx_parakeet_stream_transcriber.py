@@ -1,12 +1,14 @@
 """
-Live transcription with INT8 ONNX Parakeet TDT V3.
+Live transcription — INT8 ONNX Parakeet TDT V3.
 
-Puts (str, str) tuples on text_queue:
-  ("phase", message)  — load step / state (UI shows in status line + log file)
-  ("text", message)   — full current transcript hypothesis
-  None                — thread finished
+Queue messages:
+  ("phase", str)     — status for UI (log + optional progress)
+  ("append", str)    — new text to append to the running transcript (cumulative session)
+  None               — thread finished
 
-Loads ONNX sessions *before* reading audio so the writer never blocks on a full queue.
+Strategy: each interval we decode the *entire* buffered PCM (model sees full context).
+We compare with the previous full decode and append only the suffix (new words), so the
+UI grows like a normal transcript instead of replacing one flashing line.
 """
 
 from __future__ import annotations
@@ -73,6 +75,23 @@ def _decode_ids(ids: list[int], id_to_piece: dict[int, str]) -> str:
     return " ".join(s.split()).strip()
 
 
+def _delta_from_full_decode(prev_raw: str, new_raw: str) -> str:
+    """Text to append given previous and current full-string decode of growing audio."""
+    a = prev_raw.strip()
+    b = new_raw.strip()
+    if not b:
+        return ""
+    if not a:
+        return b
+    if b.startswith(a):
+        return b[len(a) :].lstrip()
+    i = 0
+    n = min(len(a), len(b))
+    while i < n and a[i] == b[i]:
+        i += 1
+    return b[i:].strip()
+
+
 def _ort_providers(device: str) -> list[str]:
     d = (device or "cpu").lower()
     if d == "cuda":
@@ -119,9 +138,11 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         if self.on_status:
             self.on_status(msg)
 
-    def _text_out(self, msg: str) -> None:
+    def _append_out(self, fragment: str) -> None:
+        if not fragment:
+            return
         try:
-            self.text_queue.put_nowait(("text", msg))
+            self.text_queue.put_nowait(("append", fragment))
         except queue.Full:
             pass
 
@@ -174,26 +195,26 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         providers = _ort_providers(self.device)
-        self._phase(f"Loading ONNX into memory (providers: {providers}) — mel preprocessor…")
+        self._phase(f"Loading ONNX (providers: {providers}) — mel…")
         log_line(f"[transcriber] providers={providers}")
 
         try:
             t0 = time.perf_counter()
             mel_sess = ort.InferenceSession(mel_path, so, providers=providers)
-            log_line(f"[transcriber] mel session ready in {time.perf_counter()-t0:.1f}s")
-            self._phase("Loading encoder (~650 MB, can take 30–90 s on HDD)…")
+            log_line(f"[transcriber] mel ready {time.perf_counter()-t0:.1f}s")
+            self._phase("Loading encoder (~650 MB)…")
             t0 = time.perf_counter()
             enc_sess = ort.InferenceSession(enc_path, so, providers=providers)
-            log_line(f"[transcriber] encoder session ready in {time.perf_counter()-t0:.1f}s")
+            log_line(f"[transcriber] encoder ready {time.perf_counter()-t0:.1f}s")
             self._phase("Loading decoder / joint…")
             t0 = time.perf_counter()
             dec_sess = ort.InferenceSession(dec_path, so, providers=providers)
-            log_line(f"[transcriber] decoder session ready in {time.perf_counter()-t0:.1f}s")
+            log_line(f"[transcriber] decoder ready {time.perf_counter()-t0:.1f}s")
         except Exception as e:
             fail(f"ONNX load failed: {e}")
             return
 
-        self._phase("Model ready — capturing audio…")
+        self._phase("Listening — transcript will grow as you speak…")
 
         def tdt_greedy(enc_full: np.ndarray) -> list[int]:
             t = int(enc_full.shape[2])
@@ -255,31 +276,34 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
 
         pcm_16k_buf = np.array([], dtype=np.float32)
         last_decode = 0.0
-        last_text = ""
+        last_full_text = ""
         decode_count = 0
 
         def maybe_decode(force: bool) -> None:
-            nonlocal last_decode, last_text, decode_count
+            nonlocal last_decode, last_full_text, decode_count
             now = time.monotonic()
             if pcm_16k_buf.size < 1600 and not force:
                 return
             if not force and (now - last_decode) < self.min_interval_sec:
                 return
-            log_line(f"[transcriber] decode start, buffer {pcm_16k_buf.size} samples (~{pcm_16k_buf.size/16000:.1f}s)")
+            log_line(
+                f"[transcriber] decode #{decode_count + 1}, buffer {pcm_16k_buf.size} samples (~{pcm_16k_buf.size/16000:.1f}s)"
+            )
             t0 = time.perf_counter()
             try:
-                text = run_decode(pcm_16k_buf)
+                new_full = run_decode(pcm_16k_buf)
             except Exception as e:
                 log_line(f"[transcriber] decode error {e}")
                 self._phase(f"Decode error: {e}")
                 return
             dt = time.perf_counter() - t0
             decode_count += 1
-            log_line(f"[transcriber] decode #{decode_count} {dt:.2f}s -> {len(text)} chars")
+            delta = _delta_from_full_decode(last_full_text, new_full)
+            last_full_text = new_full
+            log_line(f"[transcriber] decode #{decode_count} {dt:.2f}s full_len={len(new_full)} delta_len={len(delta)}")
             last_decode = now
-            if text != last_text:
-                last_text = text
-                self._text_out(text if text else "…")
+            if delta:
+                self._append_out(delta.rstrip() + " ")
 
         try:
             while True:
@@ -289,7 +313,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                     maybe_decode(force=False)
                     continue
                 if item is None:
-                    self._phase("Stopping — final decode…")
+                    self._phase("Final pass on buffered audio…")
                     maybe_decode(force=True)
                     break
                 f32 = _pcm16_to_f32_mono(item)
@@ -303,6 +327,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
             if self.on_error:
                 self.on_error(f"Transcription: {e}")
         finally:
+            self._phase("Transcription finished.")
             log_line("[transcriber] thread exit")
             try:
                 self.text_queue.put_nowait(None)
