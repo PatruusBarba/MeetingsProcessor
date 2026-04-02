@@ -152,14 +152,22 @@ class SettingsDialog(tk.Toplevel):
         ).grid(row=row, column=1, sticky="w", padx=(8, 0))
         row += 1
 
-        ttk.Label(frm, text="UI refresh (sec):").grid(row=row, column=0, sticky="w")
-        self._ref_var = tk.StringVar(value=str(self._config.get("transcription_refresh_sec", 0.35)))
-        ttk.Entry(frm, textvariable=self._ref_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(frm, text="Live segment length (sec):").grid(row=row, column=0, sticky="w")
+        self._seg_var = tk.StringVar(value=str(self._config.get("transcription_segment_sec", 3.0)))
+        ttk.Entry(frm, textvariable=self._seg_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
+        row += 1
+
+        ttk.Label(frm, text="Overlap (sec):").grid(row=row, column=0, sticky="w")
+        self._ov_var = tk.StringVar(value=str(self._config.get("transcription_overlap_sec", 0.75)))
+        ttk.Entry(frm, textvariable=self._ov_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
         row += 1
 
         hint = ttk.Label(
             frm,
-            text="Requires onnxruntime (or onnxruntime-gpu for CUDA). Internet needed only when downloading.",
+            text=(
+                "Live ASR uses short sliding windows (not one giant decode). "
+                "Smaller segment = more updates, more CPU. Requires onnxruntime."
+            ),
             font=("TkDefaultFont", 8),
             foreground="gray",
             wraplength=480,
@@ -282,9 +290,13 @@ class SettingsDialog(tk.Toplevel):
             self._config["transcription_model_dir"] = ""
         self._config["transcription_device"] = self._dev_var.get().strip() or "cpu"
         try:
-            self._config["transcription_refresh_sec"] = float(self._ref_var.get().strip() or "0.35")
+            self._config["transcription_segment_sec"] = float(self._seg_var.get().strip() or "3")
         except ValueError:
-            self._config["transcription_refresh_sec"] = 0.35
+            self._config["transcription_segment_sec"] = 3.0
+        try:
+            self._config["transcription_overlap_sec"] = float(self._ov_var.get().strip() or "0.75")
+        except ValueError:
+            self._config["transcription_overlap_sec"] = 0.75
         save_config(self._config)
         self._on_saved(self._config)
         self.destroy()

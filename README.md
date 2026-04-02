@@ -35,7 +35,7 @@ On first run, settings are stored in `settings.json` next to the executable (or 
 1. `pip install -r requirements.txt` (**`onnxruntime`**, **`huggingface_hub`**). For NVIDIA GPU: `pip install onnxruntime-gpu`.
 2. **Settings** → **Download model (~670 MB)** — files go to **`models\parakeet-tdt-0.6b-v3-int8`** next to the exe (or next to `main.py` when running from source). Source: Hugging Face **`smcleod/parakeet-tdt-0.6b-v3-int8`**. **Delete downloaded model** removes that folder only.
 3. Optional: **Use a custom folder** if you already have the same four ONNX files elsewhere.
-4. Enable **streaming transcript** and pick **cpu** or **cuda**. **UI refresh** sets how often the model re-runs on all audio so far; new words are **appended** to the transcript (full session text), not replaced by one line.
+4. Enable **streaming transcript** and pick **cpu** or **cuda**. **Segment length** and **overlap** control sliding-window live decode (short chunks — avoids empty output on long buffers with INT8 ONNX).
 
 ## Tests
 

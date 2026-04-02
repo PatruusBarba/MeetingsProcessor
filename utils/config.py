@@ -20,7 +20,8 @@ DEFAULTS: dict[str, Any] = {
     "transcription_enabled": False,
     "transcription_model_dir": "",
     "transcription_device": "cpu",
-    "transcription_refresh_sec": 0.35,
+    "transcription_segment_sec": 3.0,
+    "transcription_overlap_sec": 0.75,
 }
 
 
@@ -37,6 +38,13 @@ def load_config() -> dict[str, Any]:
                 stored = json.load(f)
             if isinstance(stored, dict):
                 data.update(stored)
+                if "transcription_segment_sec" not in stored and stored.get("transcription_refresh_sec"):
+                    try:
+                        data["transcription_segment_sec"] = max(
+                            1.5, float(stored["transcription_refresh_sec"]) * 6
+                        )
+                    except (TypeError, ValueError):
+                        pass
         except (OSError, json.JSONDecodeError):
             pass
     if data.get("output_directory") is None:

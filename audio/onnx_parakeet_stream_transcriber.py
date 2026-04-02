@@ -1,14 +1,11 @@
 """
-Live transcription — INT8 ONNX Parakeet TDT V3.
+Live Parakeet TDT INT8 ONNX — sliding-window segments (standard streaming ASR).
 
-Queue messages:
-  ("phase", str)     — status for UI (log + optional progress)
-  ("append", str)    — new text to append to the running transcript (cumulative session)
-  None               — thread finished
+Re-decode on the entire growing buffer fails on long audio with this export (log: full_len=0).
+We decode fixed-length 16 kHz windows with overlap and merge text — same idea as chunked
+inference in NeMo / live captioning.
 
-Strategy: each interval we decode the *entire* buffered PCM (model sees full context).
-We compare with the previous full decode and append only the suffix (new words), so the
-UI grows like a normal transcript instead of replacing one flashing line.
+Queue: ("phase", str), ("append", str), None
 """
 
 from __future__ import annotations
@@ -27,6 +24,9 @@ from utils.transcription_log import log_line
 BLANK_ID = 8192
 DURATIONS = [0, 1, 2, 3, 4]
 N_DUR = len(DURATIONS)
+
+SR = 16_000
+MIN_DECODE_SAMPLES = 4_000  # 0.25 s minimum for a tail decode
 
 
 def _pcm16_to_f32_mono(mono_bytes: bytes) -> np.ndarray:
@@ -75,21 +75,20 @@ def _decode_ids(ids: list[int], id_to_piece: dict[int, str]) -> str:
     return " ".join(s.split()).strip()
 
 
-def _delta_from_full_decode(prev_raw: str, new_raw: str) -> str:
-    """Text to append given previous and current full-string decode of growing audio."""
-    a = prev_raw.strip()
-    b = new_raw.strip()
-    if not b:
-        return ""
+def _merge_segment(accumulated: str, seg: str) -> str:
+    """Join new chunk text; strip duplicate overlap at boundary (same audio in two windows)."""
+    a = accumulated.rstrip()
+    seg = seg.strip()
+    if not seg:
+        return accumulated
     if not a:
-        return b
-    if b.startswith(a):
-        return b[len(a) :].lstrip()
-    i = 0
-    n = min(len(a), len(b))
-    while i < n and a[i] == b[i]:
-        i += 1
-    return b[i:].strip()
+        return seg
+    max_l = min(len(a), len(seg), 240)
+    for L in range(max_l, 3, -1):
+        if a[-L:] == seg[:L]:
+            rest = seg[L:].lstrip()
+            return (a + (" " + rest if rest else "")).strip()
+    return (a + " " + seg).strip()
 
 
 def _ort_providers(device: str) -> list[str]:
@@ -113,7 +112,8 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         text_queue: queue.Queue,
         model_dir: str,
         device: str,
-        min_interval_sec: float,
+        segment_sec: float,
+        overlap_sec: float,
         on_model_loading: Callable[[], None] | None,
         on_error: Callable[[str], None] | None,
         on_status: Callable[[str], None] | None,
@@ -124,7 +124,9 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         self.text_queue = text_queue
         self.model_dir = os.path.abspath(model_dir)
         self.device = device
-        self.min_interval_sec = max(0.08, float(min_interval_sec))
+        self.chunk_samples = max(int(float(segment_sec) * SR), 8000)
+        ov = max(0.0, min(float(overlap_sec), float(segment_sec) * 0.45))
+        self.advance_samples = max(self.chunk_samples // 4, self.chunk_samples - int(ov * SR))
         self.on_model_loading = on_model_loading
         self.on_error = on_error
         self.on_status = on_status
@@ -142,12 +144,14 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         if not fragment:
             return
         try:
-            self.text_queue.put_nowait(("append", fragment))
+            self.text_queue.put_nowait(("append", fragment + " "))
         except queue.Full:
             pass
 
     def run(self) -> None:
-        log_line("[transcriber] thread started")
+        log_line(
+            f"[transcriber] start sliding window chunk={self.chunk_samples} adv={self.advance_samples} ({self.chunk_samples/SR:.1f}s)"
+        )
 
         def fail(msg: str) -> None:
             log_line(f"[transcriber] ERROR {msg}")
@@ -162,10 +166,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         try:
             import onnxruntime as ort
         except ImportError:
-            fail(
-                "Missing onnxruntime. Run: pip install onnxruntime\n"
-                "(GPU: pip install onnxruntime-gpu)"
-            )
+            fail("Missing onnxruntime. pip install onnxruntime (or onnxruntime-gpu)")
             return
 
         mel_path = os.path.join(self.model_dir, "nemo128.onnx")
@@ -176,10 +177,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         self._phase("Checking model files…")
         for p in (mel_path, enc_path, dec_path, vocab_path):
             if not os.path.isfile(p):
-                fail(
-                    f"Missing model file:\n{p}\n\n"
-                    "Use Settings → Download model, or pick a folder with all four ONNX files."
-                )
+                fail(f"Missing:\n{p}")
                 return
 
         if self.on_model_loading:
@@ -195,26 +193,21 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         providers = _ort_providers(self.device)
-        self._phase(f"Loading ONNX (providers: {providers}) — mel…")
-        log_line(f"[transcriber] providers={providers}")
+        self._phase(f"Loading ONNX (providers: {providers})…")
 
         try:
             t0 = time.perf_counter()
             mel_sess = ort.InferenceSession(mel_path, so, providers=providers)
-            log_line(f"[transcriber] mel ready {time.perf_counter()-t0:.1f}s")
-            self._phase("Loading encoder (~650 MB)…")
-            t0 = time.perf_counter()
             enc_sess = ort.InferenceSession(enc_path, so, providers=providers)
-            log_line(f"[transcriber] encoder ready {time.perf_counter()-t0:.1f}s")
-            self._phase("Loading decoder / joint…")
-            t0 = time.perf_counter()
             dec_sess = ort.InferenceSession(dec_path, so, providers=providers)
-            log_line(f"[transcriber] decoder ready {time.perf_counter()-t0:.1f}s")
+            log_line(f"[transcriber] sessions ready {time.perf_counter()-t0:.1f}s")
         except Exception as e:
             fail(f"ONNX load failed: {e}")
             return
 
-        self._phase("Listening — transcript will grow as you speak…")
+        self._phase(
+            f"Listening — {self.chunk_samples/SR:.1f}s segments, overlap ~{(self.chunk_samples-self.advance_samples)/SR:.1f}s…"
+        )
 
         def tdt_greedy(enc_full: np.ndarray) -> list[int]:
             t = int(enc_full.shape[2])
@@ -262,10 +255,14 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                     time_idx = frame_start + 1
             return tokens
 
-        def run_decode(pcm_16k: np.ndarray) -> str:
-            if pcm_16k.size < 800:
+        def run_decode_pcm(pcm: np.ndarray) -> str:
+            n = int(pcm.size)
+            if n < 800:
                 return ""
-            wav = pcm_16k.reshape(1, -1).astype(np.float32)
+            if n < self.chunk_samples:
+                pad = np.zeros(self.chunk_samples - n, dtype=np.float32)
+                pcm = np.concatenate([pcm, pad])
+            wav = pcm.reshape(1, -1).astype(np.float32)
             wl = np.array([wav.shape[1]], dtype=np.int64)
             feat, fl = mel_sess.run(None, {"waveforms": wav, "waveforms_lens": wl})
             sig = feat.astype(np.float32)
@@ -274,61 +271,66 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
             ids = tdt_greedy(enc_out)
             return _decode_ids(ids, id_to_piece)
 
-        pcm_16k_buf = np.array([], dtype=np.float32)
-        last_decode = 0.0
-        last_full_text = ""
-        decode_count = 0
+        buf = np.array([], dtype=np.float32)
+        transcript = ""
+        seg_i = 0
 
-        def maybe_decode(force: bool) -> None:
-            nonlocal last_decode, last_full_text, decode_count
-            now = time.monotonic()
-            if pcm_16k_buf.size < 1600 and not force:
-                return
-            if not force and (now - last_decode) < self.min_interval_sec:
-                return
-            log_line(
-                f"[transcriber] decode #{decode_count + 1}, buffer {pcm_16k_buf.size} samples (~{pcm_16k_buf.size/16000:.1f}s)"
-            )
-            t0 = time.perf_counter()
-            try:
-                new_full = run_decode(pcm_16k_buf)
-            except Exception as e:
-                log_line(f"[transcriber] decode error {e}")
-                self._phase(f"Decode error: {e}")
-                return
-            dt = time.perf_counter() - t0
-            decode_count += 1
-            delta = _delta_from_full_decode(last_full_text, new_full)
-            last_full_text = new_full
-            log_line(f"[transcriber] decode #{decode_count} {dt:.2f}s full_len={len(new_full)} delta_len={len(delta)}")
-            last_decode = now
-            if delta:
-                self._append_out(delta.rstrip() + " ")
+        def process_sliding(final: bool) -> None:
+            nonlocal buf, transcript, seg_i
+            while buf.size >= self.chunk_samples or (final and buf.size >= MIN_DECODE_SAMPLES):
+                if buf.size < self.chunk_samples:
+                    chunk = buf.copy()
+                else:
+                    chunk = buf[: self.chunk_samples].copy()
+                t0 = time.perf_counter()
+                text = run_decode_pcm(chunk)
+                dt = time.perf_counter() - t0
+                seg_i += 1
+                log_line(
+                    f"[transcriber] seg #{seg_i} samples={chunk.size} {dt:.2f}s text_len={len(text)}"
+                )
+                if text:
+                    old = transcript
+                    transcript = _merge_segment(transcript, text)
+                    if transcript != old:
+                        if transcript.startswith(old):
+                            delta = transcript[len(old) :].lstrip()
+                        else:
+                            delta = transcript
+                        if delta:
+                            self._append_out(delta)
+                if buf.size >= self.chunk_samples:
+                    buf = buf[self.advance_samples :].copy()
+                elif final:
+                    buf = np.array([], dtype=np.float32)
+                    break
+            if final and buf.size > 0 and buf.size < MIN_DECODE_SAMPLES:
+                buf = np.array([], dtype=np.float32)
 
         try:
             while True:
                 try:
-                    item = self.audio_queue.get(timeout=0.15)
+                    item = self.audio_queue.get(timeout=0.2)
                 except queue.Empty:
-                    maybe_decode(force=False)
+                    process_sliding(final=False)
                     continue
                 if item is None:
-                    self._phase("Final pass on buffered audio…")
-                    maybe_decode(force=True)
+                    self._phase("Final segments…")
+                    process_sliding(final=True)
                     break
                 f32 = _pcm16_to_f32_mono(item)
-                if self.sample_rate_in != 16000:
-                    f32 = _resample_linear(f32, self.sample_rate_in, 16000)
+                if self.sample_rate_in != SR:
+                    f32 = _resample_linear(f32, self.sample_rate_in, SR)
                 if f32.size:
-                    pcm_16k_buf = np.concatenate([pcm_16k_buf, f32])
-                maybe_decode(force=False)
+                    buf = np.concatenate([buf, f32])
+                process_sliding(final=False)
         except Exception as e:
             log_line(f"[transcriber] loop error {e}")
             if self.on_error:
                 self.on_error(f"Transcription: {e}")
         finally:
             self._phase("Transcription finished.")
-            log_line("[transcriber] thread exit")
+            log_line("[transcriber] exit")
             try:
                 self.text_queue.put_nowait(None)
             except queue.Full:

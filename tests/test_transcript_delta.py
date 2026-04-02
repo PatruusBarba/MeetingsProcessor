@@ -1,24 +1,24 @@
-"""Tests for cumulative transcript delta logic."""
+"""Tests for sliding-window transcript merge."""
 
 import unittest
 
 
-class TestDelta(unittest.TestCase):
-    def test_empty_to_full(self) -> None:
-        from audio.onnx_parakeet_stream_transcriber import _delta_from_full_decode
+class TestMerge(unittest.TestCase):
+    def test_first(self) -> None:
+        from audio.onnx_parakeet_stream_transcriber import _merge_segment
 
-        self.assertEqual(_delta_from_full_decode("", "hello world"), "hello world")
+        self.assertEqual(_merge_segment("", "hello"), "hello")
 
-    def test_prefix_growth(self) -> None:
-        from audio.onnx_parakeet_stream_transcriber import _delta_from_full_decode
+    def test_append(self) -> None:
+        from audio.onnx_parakeet_stream_transcriber import _merge_segment
 
-        self.assertEqual(_delta_from_full_decode("hello", "hello world"), "world")
+        self.assertEqual(_merge_segment("hello", "world"), "hello world")
 
-    def test_correction(self) -> None:
-        from audio.onnx_parakeet_stream_transcriber import _delta_from_full_decode
+    def test_overlap_dup(self) -> None:
+        from audio.onnx_parakeet_stream_transcriber import _merge_segment
 
-        d = _delta_from_full_decode("hel", "hello")
-        self.assertTrue(d.startswith("lo") or "hello" in d)
+        m = _merge_segment("hello wor", "world today")
+        self.assertIn("today", m)
 
 
 if __name__ == "__main__":
