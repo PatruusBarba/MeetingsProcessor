@@ -28,13 +28,13 @@ On first run, settings are stored in `settings.json` next to the executable (or 
 - System tray (minimize on close optional), tray menu for show / record / stop / quit
 - Global hotkey **Ctrl+Shift+R** to start/stop recording (optional in Settings; polled from the GUI thread so it stays stable with PyAudio)
 - Single instance: starting again focuses the existing window
-- Optional **offline live transcript** during recording (**faster-whisper**): enable in **Settings**; text appears in the main window (chunked, ~3 s latency)
+- Optional **offline streaming transcript** during recording (**NVIDIA Parakeet TDT V3** via **NeMo**): same algorithm as NVIDIA’s `speech_to_text_streaming_infer_rnnt.py`; strong **Russian** among 25 EU languages
 
-### Live transcription
+### Live transcription (Parakeet V3)
 
-1. `pip install -r requirements.txt` (includes `faster-whisper`, `numpy`; first run downloads the chosen Whisper model).
-2. **Settings** → enable **Live transcript**, pick **model** (e.g. `base` or `small`), **device** (`cpu` or `cuda`), **compute type** (`int8` on CPU, often `float16` on GPU).
-3. Start recording; lines append as each audio chunk is decoded. This is **near real-time** (not word-by-word streaming).
+1. Install PyTorch for your platform, then `pip install -r requirements.txt` (pulls **`nemo_toolkit[asr]`**, a large dependency set). First inference downloads **`nvidia/parakeet-tdt-0.6b-v3`** (~2.5 GB) from Hugging Face.
+2. **Settings** → enable **streaming transcript**, set **device** (`cuda` strongly recommended), **torch dtype** (`float16` or `bfloat16` on GPU). Optional: tune chunk / left / right context (defaults match NeMo’s streaming example: 2 s / 10 s / 2 s).
+3. Start recording; the text panel shows the **running hypothesis** (updated as NeMo’s streaming decoder advances). No cloud — all local.
 
 ## Tests
 
@@ -59,7 +59,7 @@ Output: `dist\MeetingRecorder\` with `MeetingRecorder.exe` and dependencies.
 - **No microphone / privacy**: Windows **Settings → Privacy → Microphone** — allow access for desktop apps.
 - **PyAudioWPatch**: Wheels are **Windows-only**. Install fails on Linux or macOS by design.
 - **Devices**: Use **Refresh** if you plug in USB audio gear after launch.
-- **Transcription**: If import fails, install `faster-whisper`. GPU needs a CUDA-capable PyTorch setup; otherwise use **cpu** + **int8**.
+- **Transcription**: Requires `nemo_toolkit[asr]` and a working **PyTorch** install. GPU + CUDA is recommended for Parakeet (~0.6B). CPU works but can be slow.
 
 ## License
 

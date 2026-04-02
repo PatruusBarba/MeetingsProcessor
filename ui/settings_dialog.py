@@ -62,29 +62,26 @@ class SettingsDialog(tk.Toplevel):
 
         ttk.Separator(frm, orient=tk.HORIZONTAL).grid(row=row, column=0, columnspan=3, sticky="ew", pady=12)
         row += 1
-        ttk.Label(frm, text="Offline live transcription (faster-whisper)", font=("TkDefaultFont", 9, "bold")).grid(
-            row=row, column=0, columnspan=3, sticky="w"
-        )
+        ttk.Label(
+            frm,
+            text="Offline live transcription (NVIDIA Parakeet TDT V3, NeMo)",
+            font=("TkDefaultFont", 9, "bold"),
+        ).grid(row=row, column=0, columnspan=3, sticky="w")
         row += 1
 
         self._trans_on = tk.BooleanVar(value=bool(self._config.get("transcription_enabled", False)))
         ttk.Checkbutton(
             frm,
-            text="Enable live transcript during recording",
+            text="Enable streaming transcript during recording",
             variable=self._trans_on,
         ).grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 2))
         row += 1
 
-        ttk.Label(frm, text="Model:").grid(row=row, column=0, sticky="w")
-        self._model_var = tk.StringVar(value=str(self._config.get("transcription_model") or "base"))
-        model_cb = ttk.Combobox(
-            frm,
-            textvariable=self._model_var,
-            values=("tiny", "base", "small", "medium", "large-v3"),
-            width=18,
-            state="readonly",
+        ttk.Label(frm, text="Pretrained name / HF id:").grid(row=row, column=0, sticky="w")
+        self._pretrained_var = tk.StringVar(
+            value=str(self._config.get("transcription_pretrained_name") or "nvidia/parakeet-tdt-0.6b-v3")
         )
-        model_cb.grid(row=row, column=1, sticky="w", padx=(8, 0))
+        ttk.Entry(frm, textvariable=self._pretrained_var, width=42).grid(row=row, column=1, sticky="ew", padx=(8, 0))
         row += 1
 
         ttk.Label(frm, text="Device:").grid(row=row, column=0, sticky="w")
@@ -99,29 +96,43 @@ class SettingsDialog(tk.Toplevel):
         dev_cb.grid(row=row, column=1, sticky="w", padx=(8, 0))
         row += 1
 
-        ttk.Label(frm, text="Compute type:").grid(row=row, column=0, sticky="w")
-        self._ctype_var = tk.StringVar(value=str(self._config.get("transcription_compute_type") or "int8"))
-        ctype_cb = ttk.Combobox(
+        ttk.Label(frm, text="Torch dtype:").grid(row=row, column=0, sticky="w")
+        self._dtype_var = tk.StringVar(value=str(self._config.get("transcription_torch_dtype") or "float32"))
+        dtype_cb = ttk.Combobox(
             frm,
-            textvariable=self._ctype_var,
-            values=("int8", "float16", "float32", "int8_float16"),
+            textvariable=self._dtype_var,
+            values=("float32", "float16", "bfloat16"),
             width=18,
             state="readonly",
         )
-        ctype_cb.grid(row=row, column=1, sticky="w", padx=(8, 0))
+        dtype_cb.grid(row=row, column=1, sticky="w", padx=(8, 0))
         row += 1
 
-        ttk.Label(frm, text="Language (empty = auto):").grid(row=row, column=0, sticky="w")
-        self._lang_var = tk.StringVar(value=str(self._config.get("transcription_language") or ""))
-        ttk.Entry(frm, textvariable=self._lang_var, width=22).grid(row=row, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(frm, text="Stream chunk (sec):").grid(row=row, column=0, sticky="w")
+        self._chunk_var = tk.StringVar(value=str(self._config.get("transcription_chunk_secs", 2.0)))
+        ttk.Entry(frm, textvariable=self._chunk_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
+        row += 1
+
+        ttk.Label(frm, text="Left context (sec):").grid(row=row, column=0, sticky="w")
+        self._left_var = tk.StringVar(value=str(self._config.get("transcription_left_context_secs", 10.0)))
+        ttk.Entry(frm, textvariable=self._left_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
+        row += 1
+
+        ttk.Label(frm, text="Right context (sec):").grid(row=row, column=0, sticky="w")
+        self._right_var = tk.StringVar(value=str(self._config.get("transcription_right_context_secs", 2.0)))
+        ttk.Entry(frm, textvariable=self._right_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
         row += 1
 
         hint = ttk.Label(
             frm,
-            text="Tip: GPU needs PyTorch with CUDA; use float16 on cuda. Chunks ~3 s — not instant.",
+            text=(
+                "Uses NeMo’s official RNNT streaming buffer (see NVIDIA NeMo "
+                "speech_to_text_streaming_infer_rnnt). Russian is supported; ~0.6B model — prefer GPU. "
+                "Install: pip install 'nemo_toolkit[asr]'"
+            ),
             font=("TkDefaultFont", 8),
             foreground="gray",
-            wraplength=420,
+            wraplength=440,
         )
         hint.grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 0))
         row += 1
@@ -149,10 +160,21 @@ class SettingsDialog(tk.Toplevel):
         self._config["start_minimized"] = self._start_min_var.get()
         self._config["global_hotkey_enabled"] = self._hotkey_var.get()
         self._config["transcription_enabled"] = self._trans_on.get()
-        self._config["transcription_model"] = self._model_var.get().strip() or "base"
+        self._config["transcription_pretrained_name"] = self._pretrained_var.get().strip() or "nvidia/parakeet-tdt-0.6b-v3"
         self._config["transcription_device"] = self._dev_var.get().strip() or "cpu"
-        self._config["transcription_compute_type"] = self._ctype_var.get().strip() or "int8"
-        self._config["transcription_language"] = self._lang_var.get().strip()
+        self._config["transcription_torch_dtype"] = self._dtype_var.get().strip() or "float32"
+        try:
+            self._config["transcription_chunk_secs"] = float(self._chunk_var.get().strip() or "2")
+        except ValueError:
+            self._config["transcription_chunk_secs"] = 2.0
+        try:
+            self._config["transcription_left_context_secs"] = float(self._left_var.get().strip() or "10")
+        except ValueError:
+            self._config["transcription_left_context_secs"] = 10.0
+        try:
+            self._config["transcription_right_context_secs"] = float(self._right_var.get().strip() or "2")
+        except ValueError:
+            self._config["transcription_right_context_secs"] = 2.0
         save_config(self._config)
         self._on_saved(self._config)
         self.destroy()

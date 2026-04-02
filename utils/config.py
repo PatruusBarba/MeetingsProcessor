@@ -18,10 +18,12 @@ DEFAULTS: dict[str, Any] = {
     "last_input_device_id": None,
     "last_output_device_id": None,
     "transcription_enabled": False,
-    "transcription_model": "base",
+    "transcription_pretrained_name": "nvidia/parakeet-tdt-0.6b-v3",
     "transcription_device": "cpu",
-    "transcription_compute_type": "int8",
-    "transcription_language": "",
+    "transcription_torch_dtype": "float32",
+    "transcription_chunk_secs": 2.0,
+    "transcription_left_context_secs": 10.0,
+    "transcription_right_context_secs": 2.0,
 }
 
 
@@ -38,6 +40,8 @@ def load_config() -> dict[str, Any]:
                 stored = json.load(f)
             if isinstance(stored, dict):
                 data.update(stored)
+                if "transcription_pretrained_name" not in stored and stored.get("transcription_model"):
+                    data["transcription_pretrained_name"] = "nvidia/parakeet-tdt-0.6b-v3"
         except (OSError, json.JSONDecodeError):
             pass
     if data.get("output_directory") is None:

@@ -11,7 +11,7 @@ from typing import Callable
 import pyaudiowpatch as pyaudio
 
 from audio.devices import resolve_loopback_device
-from audio.stream_transcriber import LiveTranscriberThread
+from audio.parakeet_stream_transcriber import ParakeetLiveTranscriberThread
 from audio.loopback import LoopbackCaptureThread
 from audio.mic_capture import MicCaptureThread
 from audio.mp3_encoder import wav_to_mp3_mono
@@ -244,10 +244,12 @@ class RecordingEngine:
         *,
         transcription_enabled: bool = False,
         transcription_text_queue: queue.Queue | None = None,
-        transcription_model_size: str = "base",
+        transcription_pretrained_name: str = "nvidia/parakeet-tdt-0.6b-v3",
         transcription_device: str = "cpu",
-        transcription_compute_type: str = "int8",
-        transcription_language: str | None = None,
+        transcription_torch_dtype: str = "float32",
+        transcription_chunk_secs: float = 2.0,
+        transcription_left_context_secs: float = 10.0,
+        transcription_right_context_secs: float = 2.0,
         on_transcription_model_loading: Callable[[], None] | None = None,
         on_transcription_error: Callable[[str], None] | None = None,
     ) -> tuple[bool, str | None]:
@@ -275,17 +277,18 @@ class RecordingEngine:
 
         trans_q: queue.Queue | None = None
         if transcription_enabled and transcription_text_queue is not None:
-            trans_q = queue.Queue(maxsize=64)
+            trans_q = queue.Queue(maxsize=128)
             self._transcriber_audio_q = trans_q
-            lang = (transcription_language or "").strip() or None
-            self._transcriber_thread = LiveTranscriberThread(
+            self._transcriber_thread = ParakeetLiveTranscriberThread(
                 trans_q,
                 target_rate,
                 transcription_text_queue,
-                transcription_model_size,
+                transcription_pretrained_name,
                 transcription_device,
-                transcription_compute_type,
-                lang,
+                transcription_torch_dtype,
+                transcription_chunk_secs,
+                transcription_left_context_secs,
+                transcription_right_context_secs,
                 on_transcription_model_loading,
                 on_transcription_error,
             )
