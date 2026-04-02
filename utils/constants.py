@@ -27,3 +27,14 @@ def app_dir() -> str:
     if is_frozen():
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+# Bundled Parakeet INT8 ONNX (downloaded in-app; ~670 MB). Same files as smcleod/parakeet-tdt-0.6b-v3-int8
+PARAKEET_ONNX_SUBDIR = ("models", "parakeet-tdt-0.6b-v3-int8")
+PARAKEET_ONNX_REPO_ID = "smcleod/parakeet-tdt-0.6b-v3-int8"
+
+
+def bundled_parakeet_onnx_dir() -> str:
+    import os
+
+    return os.path.join(app_dir(), *PARAKEET_ONNX_SUBDIR)

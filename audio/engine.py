@@ -17,6 +17,7 @@ from audio.mic_capture import MicCaptureThread
 from audio.mp3_encoder import wav_to_mp3_mono
 from audio.wav_writer import MonoWavWriter
 from utils.constants import FALLBACK_SAMPLE_RATE, MP3_BITRATE_KBPS
+from utils.onnx_model_bundle import is_bundle_complete, resolve_transcription_model_dir
 
 
 def _mix_sample(a: int, b: int) -> int:
@@ -244,7 +245,7 @@ class RecordingEngine:
         *,
         transcription_enabled: bool = False,
         transcription_text_queue: queue.Queue | None = None,
-        transcription_model_dir: str = "",
+        transcription_model_dir: str | None = "",
         transcription_device: str = "cpu",
         transcription_refresh_sec: float = 0.35,
         on_transcription_model_loading: Callable[[], None] | None = None,
@@ -274,9 +275,9 @@ class RecordingEngine:
 
         trans_q: queue.Queue | None = None
         if transcription_enabled and transcription_text_queue is not None:
-            mdir = (transcription_model_dir or "").strip()
-            if not mdir or not os.path.isdir(mdir):
-                return False, "Transcription: set a valid folder with ONNX models (Settings)."
+            mdir = resolve_transcription_model_dir(transcription_model_dir)
+            if not is_bundle_complete(mdir):
+                return False, "Transcription: download the ONNX model in Settings first."
             trans_q = queue.Queue(maxsize=128)
             self._transcriber_audio_q = trans_q
             self._transcriber_thread = OnnxParakeetLiveTranscriberThread(

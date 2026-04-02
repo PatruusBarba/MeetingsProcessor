@@ -32,10 +32,10 @@ On first run, settings are stored in `settings.json` next to the executable (or 
 
 ### Live transcription (ONNX Parakeet)
 
-1. Download or copy a folder containing **`nemo128.onnx`**, **`encoder-model.int8.onnx`**, **`decoder_joint-model.int8.onnx`**, **`vocab.txt`** (your BrainstormAssistant `parakeet-tdt-0.6b-v3` folder matches).
-2. `pip install -r requirements.txt` (includes **`onnxruntime`**). For NVIDIA GPU: `pip install onnxruntime-gpu` and set **Inference device** to **cuda** in Settings.
-3. **Settings** → enable transcript → **Browse** to that folder → optional **UI refresh** interval (seconds) for how often the full transcript is recomputed on growing audio.
-4. The panel shows the **current full hypothesis** text (TDT greedy decode, same rule set as `nano-parakeet`). All local.
+1. `pip install -r requirements.txt` (**`onnxruntime`**, **`huggingface_hub`**). For NVIDIA GPU: `pip install onnxruntime-gpu`.
+2. **Settings** → **Download model (~670 MB)** — files go to **`models\parakeet-tdt-0.6b-v3-int8`** next to the exe (or next to `main.py` when running from source). Source: Hugging Face **`smcleod/parakeet-tdt-0.6b-v3-int8`**. **Delete downloaded model** removes that folder only.
+3. Optional: **Use a custom folder** if you already have the same four ONNX files elsewhere.
+4. Enable **streaming transcript** and pick **cpu** or **cuda**. **UI refresh** sets how often the running text is updated.
 
 ## Tests
 
