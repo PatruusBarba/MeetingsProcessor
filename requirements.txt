@@ -3,5 +3,4 @@ lameenc>=1.7.0
 pystray>=0.19.5
 Pillow>=10.0.0
 numpy>=1.24.0
-# Live offline transcription (Parakeet V3 via NeMo — large install, PyTorch)
-nemo_toolkit[asr]>=2.4.0
+onnxruntime>=1.16.0

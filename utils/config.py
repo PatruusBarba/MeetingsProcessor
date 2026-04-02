@@ -18,12 +18,9 @@ DEFAULTS: dict[str, Any] = {
     "last_input_device_id": None,
     "last_output_device_id": None,
     "transcription_enabled": False,
-    "transcription_pretrained_name": "nvidia/parakeet-tdt-0.6b-v3",
+    "transcription_model_dir": "",
     "transcription_device": "cpu",
-    "transcription_torch_dtype": "float32",
-    "transcription_chunk_secs": 2.0,
-    "transcription_left_context_secs": 10.0,
-    "transcription_right_context_secs": 2.0,
+    "transcription_refresh_sec": 0.35,
 }
 
 
@@ -40,8 +37,6 @@ def load_config() -> dict[str, Any]:
                 stored = json.load(f)
             if isinstance(stored, dict):
                 data.update(stored)
-                if "transcription_pretrained_name" not in stored and stored.get("transcription_model"):
-                    data["transcription_pretrained_name"] = "nvidia/parakeet-tdt-0.6b-v3"
         except (OSError, json.JSONDecodeError):
             pass
     if data.get("output_directory") is None:
@@ -55,5 +50,7 @@ def save_config(data: dict[str, Any]) -> None:
     to_store = {k: data.get(k, DEFAULTS[k]) for k in DEFAULTS}
     if to_store.get("output_directory"):
         to_store["output_directory"] = os.path.normpath(to_store["output_directory"])
+    if to_store.get("transcription_model_dir"):
+        to_store["transcription_model_dir"] = os.path.normpath(str(to_store["transcription_model_dir"]))
     with open(path, "w", encoding="utf-8") as f:
         json.dump(to_store, f, indent=2)

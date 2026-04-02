@@ -28,13 +28,14 @@ On first run, settings are stored in `settings.json` next to the executable (or 
 - System tray (minimize on close optional), tray menu for show / record / stop / quit
 - Global hotkey **Ctrl+Shift+R** to start/stop recording (optional in Settings; polled from the GUI thread so it stays stable with PyAudio)
 - Single instance: starting again focuses the existing window
-- Optional **offline streaming transcript** during recording (**NVIDIA Parakeet TDT V3** via **NeMo**): same algorithm as NVIDIA’s `speech_to_text_streaming_infer_rnnt.py`; strong **Russian** among 25 EU languages
+- Optional **offline live transcript** during recording: **Parakeet TDT V3 INT8 ONNX** via **ONNX Runtime** (~650 MB on disk — same layout as [smcleod/parakeet-tdt-0.6b-v3-int8](https://huggingface.co/smcleod/parakeet-tdt-0.6b-v3-int8)); no NeMo, no 2.5 GB `.nemo` download
 
-### Live transcription (Parakeet V3)
+### Live transcription (ONNX Parakeet)
 
-1. Install PyTorch for your platform, then `pip install -r requirements.txt` (pulls **`nemo_toolkit[asr]`**, a large dependency set). First inference downloads **`nvidia/parakeet-tdt-0.6b-v3`** (~2.5 GB) from Hugging Face.
-2. **Settings** → enable **streaming transcript**, set **device** (`cuda` strongly recommended), **torch dtype** (`float16` or `bfloat16` on GPU). Optional: tune chunk / left / right context (defaults match NeMo’s streaming example: 2 s / 10 s / 2 s).
-3. Start recording; the text panel shows the **running hypothesis** (updated as NeMo’s streaming decoder advances). No cloud — all local.
+1. Download or copy a folder containing **`nemo128.onnx`**, **`encoder-model.int8.onnx`**, **`decoder_joint-model.int8.onnx`**, **`vocab.txt`** (your BrainstormAssistant `parakeet-tdt-0.6b-v3` folder matches).
+2. `pip install -r requirements.txt` (includes **`onnxruntime`**). For NVIDIA GPU: `pip install onnxruntime-gpu` and set **Inference device** to **cuda** in Settings.
+3. **Settings** → enable transcript → **Browse** to that folder → optional **UI refresh** interval (seconds) for how often the full transcript is recomputed on growing audio.
+4. The panel shows the **current full hypothesis** text (TDT greedy decode, same rule set as `nano-parakeet`). All local.
 
 ## Tests
 
@@ -59,7 +60,7 @@ Output: `dist\MeetingRecorder\` with `MeetingRecorder.exe` and dependencies.
 - **No microphone / privacy**: Windows **Settings → Privacy → Microphone** — allow access for desktop apps.
 - **PyAudioWPatch**: Wheels are **Windows-only**. Install fails on Linux or macOS by design.
 - **Devices**: Use **Refresh** if you plug in USB audio gear after launch.
-- **Transcription**: Requires `nemo_toolkit[asr]` and a working **PyTorch** install. GPU + CUDA is recommended for Parakeet (~0.6B). CPU works but can be slow.
+- **Transcription**: Needs a valid **ONNX model folder** and `onnxruntime` (or `onnxruntime-gpu`). If you pick **cuda** but ORT has no CUDA provider, the app falls back to CPU.
 
 ## License
 

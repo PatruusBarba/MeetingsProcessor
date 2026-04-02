@@ -11,7 +11,7 @@ from typing import Callable
 import pyaudiowpatch as pyaudio
 
 from audio.devices import resolve_loopback_device
-from audio.parakeet_stream_transcriber import ParakeetLiveTranscriberThread
+from audio.onnx_parakeet_stream_transcriber import OnnxParakeetLiveTranscriberThread
 from audio.loopback import LoopbackCaptureThread
 from audio.mic_capture import MicCaptureThread
 from audio.mp3_encoder import wav_to_mp3_mono
@@ -244,12 +244,9 @@ class RecordingEngine:
         *,
         transcription_enabled: bool = False,
         transcription_text_queue: queue.Queue | None = None,
-        transcription_pretrained_name: str = "nvidia/parakeet-tdt-0.6b-v3",
+        transcription_model_dir: str = "",
         transcription_device: str = "cpu",
-        transcription_torch_dtype: str = "float32",
-        transcription_chunk_secs: float = 2.0,
-        transcription_left_context_secs: float = 10.0,
-        transcription_right_context_secs: float = 2.0,
+        transcription_refresh_sec: float = 0.35,
         on_transcription_model_loading: Callable[[], None] | None = None,
         on_transcription_error: Callable[[str], None] | None = None,
     ) -> tuple[bool, str | None]:
@@ -277,18 +274,18 @@ class RecordingEngine:
 
         trans_q: queue.Queue | None = None
         if transcription_enabled and transcription_text_queue is not None:
+            mdir = (transcription_model_dir or "").strip()
+            if not mdir or not os.path.isdir(mdir):
+                return False, "Transcription: set a valid folder with ONNX models (Settings)."
             trans_q = queue.Queue(maxsize=128)
             self._transcriber_audio_q = trans_q
-            self._transcriber_thread = ParakeetLiveTranscriberThread(
+            self._transcriber_thread = OnnxParakeetLiveTranscriberThread(
                 trans_q,
                 target_rate,
                 transcription_text_queue,
-                transcription_pretrained_name,
+                mdir,
                 transcription_device,
-                transcription_torch_dtype,
-                transcription_chunk_secs,
-                transcription_left_context_secs,
-                transcription_right_context_secs,
+                transcription_refresh_sec,
                 on_transcription_model_loading,
                 on_transcription_error,
             )

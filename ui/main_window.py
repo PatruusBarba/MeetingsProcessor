@@ -129,7 +129,7 @@ class MainWindow:
             row=5, column=0, columnspan=3, pady=12
         )
 
-        trans_lf = ttk.LabelFrame(self.root, text="Live transcript (Parakeet V3, offline)", padding=8)
+        trans_lf = ttk.LabelFrame(self.root, text="Live transcript (Parakeet ONNX, offline)", padding=8)
         trans_lf.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 4))
         trans_lf.columnconfigure(0, weight=1)
         trans_lf.rowconfigure(0, weight=1)
@@ -469,7 +469,7 @@ class MainWindow:
             self._clear_transcript()
 
         def on_model_loading() -> None:
-            self.root.after(0, lambda: self._set_transcript_text("[Loading Parakeet / NeMo… first run downloads ~2.5 GB]"))
+            self.root.after(0, lambda: self._set_transcript_text("[Loading ONNX models from folder…]"))
 
         def on_transcription_error(msg: str) -> None:
             self.root.after(0, lambda m=msg: messagebox.showerror(APP_NAME, m))
@@ -485,14 +485,9 @@ class MainWindow:
             on_convert_error,
             transcription_enabled=trans_on,
             transcription_text_queue=self._transcription_q if trans_on else None,
-            transcription_pretrained_name=str(
-                self._config.get("transcription_pretrained_name") or "nvidia/parakeet-tdt-0.6b-v3"
-            ),
+            transcription_model_dir=str(self._config.get("transcription_model_dir") or ""),
             transcription_device=str(self._config.get("transcription_device") or "cpu"),
-            transcription_torch_dtype=str(self._config.get("transcription_torch_dtype") or "float32"),
-            transcription_chunk_secs=float(self._config.get("transcription_chunk_secs") or 2.0),
-            transcription_left_context_secs=float(self._config.get("transcription_left_context_secs") or 10.0),
-            transcription_right_context_secs=float(self._config.get("transcription_right_context_secs") or 2.0),
+            transcription_refresh_sec=float(self._config.get("transcription_refresh_sec") or 0.35),
             on_transcription_model_loading=on_model_loading if trans_on else None,
             on_transcription_error=on_transcription_error if trans_on else None,
         )
