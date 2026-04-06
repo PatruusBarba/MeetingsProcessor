@@ -95,3 +95,28 @@ class UtteranceVAD:
             pos += FRAME_SAMPLES
             dropped += 1
         return pcm[pos:] if pos > 0 else pcm
+
+    def first_speech_frame_start(self, pcm: np.ndarray) -> int | None:
+        """Sample index of the first full 30 ms frame classified as speech, or None."""
+        n = int(pcm.size)
+        if n < FRAME_SAMPLES:
+            return None
+        for i in range(0, n - FRAME_SAMPLES + 1, FRAME_SAMPLES):
+            if self.frame_is_speech(pcm[i : i + FRAME_SAMPLES]):
+                return i
+        return None
+
+    def align_start_with_preroll(self, pcm: np.ndarray, preroll_sec: float) -> np.ndarray:
+        """
+        Keep audio from (first VAD speech frame minus preroll). Compensates VAD attack delay
+        and weak syllable onsets that trim_leading_silence would cut off.
+        """
+        n = int(pcm.size)
+        if n == 0:
+            return pcm
+        first = self.first_speech_frame_start(pcm)
+        if first is None:
+            return pcm
+        pr = int(max(0.0, float(preroll_sec)) * 16000)
+        start = max(0, first - pr)
+        return pcm[start:]
