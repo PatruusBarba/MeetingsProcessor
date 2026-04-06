@@ -43,13 +43,13 @@ class UtteranceVAD:
     def any_speech(self, pcm: np.ndarray) -> bool:
         n = int(pcm.size)
         if n < FRAME_SAMPLES:
-            return _energy_speech(pcm, self._energy_rms * 1.5) if n > 80 else False
+            return _energy_speech(pcm, self._energy_rms * 1.12) if n > 80 else False
         for i in range(0, n - FRAME_SAMPLES + 1, FRAME_SAMPLES):
             if self.frame_is_speech(pcm[i : i + FRAME_SAMPLES]):
                 return True
         tail = n % FRAME_SAMPLES
         if tail > 160:
-            return _energy_speech(pcm[n - tail :], self._energy_rms * 1.5)
+            return _energy_speech(pcm[n - tail :], self._energy_rms * 1.12)
         return False
 
     def trailing_silence_seconds(self, pcm: np.ndarray) -> float:
@@ -112,7 +112,7 @@ class UtteranceVAD:
         if n < FRAME_SAMPLES:
             return None
         hop = max(80, int(hop_samples))
-        thr = float(self._energy_rms) * 0.5
+        thr = float(self._energy_rms) * 0.42
         for i in range(0, n - FRAME_SAMPLES + 1, hop):
             frame = pcm[i : i + FRAME_SAMPLES]
             rms = float(np.sqrt(np.mean(frame * frame)))

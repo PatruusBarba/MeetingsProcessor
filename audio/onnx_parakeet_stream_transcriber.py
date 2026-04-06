@@ -3,7 +3,7 @@ Live Parakeet TDT INT8 ONNX with VAD-gated utterances (not fixed 30 s cuts).
 
 - Audio from the recorder is always buffered in parallel (decode never blocks capture).
 - min_utterance_sec: only used to skip decode after long buffers with no speech (save CPU).
-- Close utterance on end_silence_sec of trailing silence once there is enough audio to decode (short phrases OK), or at max_utterance_sec (safety cap).
+- Close utterance on end_silence_sec of trailing silence once there is enough audio to decode (~60 ms min; short words OK), or at max_utterance_sec (safety cap).
 - Queue: ("phase", str), ("decode_start", {"sec": float}), ("decode_end", {}), ("append", str), None
 """
 
@@ -26,9 +26,12 @@ DURATIONS = [0, 1, 2, 3, 4]
 N_DUR = len(DURATIONS)
 
 SR = 16_000
-MIN_DECODE_SAMPLES = 4_000
-# On recording stop, decode tail if we have at least this much (model pads short input).
-MIN_TAIL_SAMPLES = 800
+# Minimum samples before we may close an utterance or run ONNX (~60 ms). Lower than 0.25 s so one short word still decodes.
+MIN_DECODE_SAMPLES = 960
+# On recording stop, try final decode from this many samples (~30 ms).
+MIN_TAIL_SAMPLES = 480
+# Waveform pad length for mel (longer pad helps very short utterances on this ONNX export).
+MIN_WAVEFORM_PAD_SAMPLES = 16_000
 # Default if caller omits (normally from settings).
 DEFAULT_VAD_PREROLL_SEC = 0.55
 
@@ -286,9 +289,9 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
 
         def run_decode_pcm(pcm: np.ndarray) -> str:
             n = int(pcm.size)
-            if n < 800:
+            if n < 400:
                 return ""
-            pad_to = max(n, 8_000)
+            pad_to = max(n, MIN_WAVEFORM_PAD_SAMPLES)
             if n < pad_to:
                 pcm = np.concatenate([pcm, np.zeros(pad_to - n, dtype=np.float32)])
             wav = pcm.reshape(1, -1).astype(np.float32)
