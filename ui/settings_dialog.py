@@ -179,9 +179,9 @@ class SettingsDialog(tk.Toplevel):
         row += 1
 
         ttk.Label(frm, text="VAD engine:").grid(row=row, column=0, sticky="w")
-        _vb = str(self._config.get("transcription_vad_backend") or "auto").strip().lower()
+        _vb = str(self._config.get("transcription_vad_backend") or "webrtc").strip().lower()
         if _vb not in ("auto", "silero", "webrtc"):
-            _vb = "auto"
+            _vb = "webrtc"
         self._vad_back_var = tk.StringVar(value=_vb)
         ttk.Combobox(
             frm,
@@ -360,7 +360,7 @@ class SettingsDialog(tk.Toplevel):
             0, min(3, int(self._config["transcription_vad_aggressiveness"]))
         )
         vb = self._vad_back_var.get().strip().lower()
-        self._config["transcription_vad_backend"] = vb if vb in ("auto", "silero", "webrtc") else "auto"
+            self._config["transcription_vad_backend"] = vb if vb in ("auto", "silero", "webrtc") else "webrtc"
         try:
             self._config["transcription_silero_threshold"] = max(
                 0.05, min(0.95, float(self._silero_thr_var.get().strip() or "0.35"))

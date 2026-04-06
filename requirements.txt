@@ -7,3 +7,4 @@ onnxruntime>=1.16.0
 huggingface_hub>=0.20.0
 webrtcvad>=2.0.10
 silero-vad-lite>=0.2.1
+pytest>=7.0.0

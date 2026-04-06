@@ -3,7 +3,7 @@ Live Parakeet TDT INT8 ONNX with VAD-gated utterances (not fixed 30 s cuts).
 
 - Audio from the recorder is always buffered in parallel (decode never blocks capture).
 - min_utterance_sec: only used to skip decode after long buffers with no speech (save CPU).
-- Close utterance on end_silence_sec of trailing silence once there is enough audio to decode (~60 ms min; short words OK), or at max_utterance_sec (safety cap).
+- Close utterance on end_silence_sec of trailing silence once there is enough audio to decode (~60 ms min; short phrases OK), or at max_utterance_sec (safety cap).
 - Queue: ("phase", str), ("decode_start", {"sec": float}), ("decode_end", {}), ("append", str), None
 """
 
@@ -18,20 +18,15 @@ from typing import Callable
 
 import numpy as np
 
+from audio.parakeet_onnx_runtime import ParakeetOnnxDecoder
 from utils.speech_vad import create_stream_vad
 from utils.transcription_log import log_line
 
-BLANK_ID = 8192
-DURATIONS = [0, 1, 2, 3, 4]
-N_DUR = len(DURATIONS)
-
 SR = 16_000
-# Minimum samples before we may close an utterance or run ONNX (~60 ms). Lower than 0.25 s so one short word still decodes.
+# Minimum samples before we may close an utterance or run ONNX (~60 ms).
 MIN_DECODE_SAMPLES = 960
 # On recording stop, try final decode from this many samples (~30 ms).
 MIN_TAIL_SAMPLES = 480
-# Waveform pad length for mel (longer pad helps very short utterances on this ONNX export).
-MIN_WAVEFORM_PAD_SAMPLES = 16_000
 # Default if caller omits (normally from settings).
 DEFAULT_VAD_PREROLL_SEC = 0.55
 
@@ -55,33 +50,6 @@ def _resample_linear(x: np.ndarray, src_sr: int, dst_sr: int) -> np.ndarray:
     return np.interp(t_dst, t_src, x.astype(np.float64)).astype(np.float32)
 
 
-def _load_vocab_txt(path: str) -> dict[int, str]:
-    id_to_piece: dict[int, str] = {}
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.rstrip("\n")
-            if not line:
-                continue
-            sp = line.rfind(" ")
-            if sp < 0:
-                continue
-            piece = line[:sp]
-            tid = int(line[sp + 1 :])
-            id_to_piece[tid] = piece
-    return id_to_piece
-
-
-def _decode_ids(ids: list[int], id_to_piece: dict[int, str]) -> str:
-    parts: list[str] = []
-    for i in ids:
-        p = id_to_piece.get(i, "")
-        if p in ("<blk>", "<pad>", "<unk>"):
-            continue
-        parts.append(p)
-    s = "".join(parts).replace("\u2581", " ")
-    return " ".join(s.split()).strip()
-
-
 def _merge_segment(accumulated: str, seg: str) -> str:
     a = accumulated.rstrip()
     seg = seg.strip()
@@ -97,17 +65,10 @@ def _merge_segment(accumulated: str, seg: str) -> str:
     return (a + " " + seg).strip()
 
 
-def _ort_providers(device: str) -> list[str]:
-    d = (device or "cpu").lower()
-    if d == "cuda":
-        try:
-            import onnxruntime as ort
-
-            if "CUDAExecutionProvider" in ort.get_available_providers():
-                return ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        except Exception:
-            pass
-    return ["CPUExecutionProvider"]
+def _buffer_rms(pcm: np.ndarray) -> float:
+    if pcm.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(pcm.astype(np.float64) ** 2)))
 
 
 class OnnxParakeetLiveTranscriberThread(threading.Thread):
@@ -201,43 +162,13 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                 pass
 
         try:
-            import onnxruntime as ort
-        except ImportError:
-            fail("Missing onnxruntime. pip install onnxruntime (or onnxruntime-gpu)")
+            if self.on_model_loading:
+                self.on_model_loading()
+            self._phase("Loading Parakeet ONNX…")
+            decoder = ParakeetOnnxDecoder(self.model_dir, self.device)
+        except FileNotFoundError as e:
+            fail(f"Missing model file:\n{e}")
             return
-
-        mel_path = os.path.join(self.model_dir, "nemo128.onnx")
-        enc_path = os.path.join(self.model_dir, "encoder-model.int8.onnx")
-        dec_path = os.path.join(self.model_dir, "decoder_joint-model.int8.onnx")
-        vocab_path = os.path.join(self.model_dir, "vocab.txt")
-
-        self._phase("Checking model files…")
-        for p in (mel_path, enc_path, dec_path, vocab_path):
-            if not os.path.isfile(p):
-                fail(f"Missing:\n{p}")
-                return
-
-        if self.on_model_loading:
-            self.on_model_loading()
-
-        self._phase("Reading vocabulary…")
-        try:
-            id_to_piece = _load_vocab_txt(vocab_path)
-        except Exception as e:
-            fail(f"vocab.txt: {e}")
-            return
-
-        so = ort.SessionOptions()
-        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        providers = _ort_providers(self.device)
-        self._phase(f"Loading ONNX (providers: {providers})…")
-
-        try:
-            t0 = time.perf_counter()
-            mel_sess = ort.InferenceSession(mel_path, so, providers=providers)
-            enc_sess = ort.InferenceSession(enc_path, so, providers=providers)
-            dec_sess = ort.InferenceSession(dec_path, so, providers=providers)
-            log_line(f"[transcriber] sessions ready {time.perf_counter()-t0:.1f}s")
         except Exception as e:
             fail(f"ONNX load failed: {e}")
             return
@@ -247,67 +178,8 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
             f"skip silent buffers ≥{self.min_skip_samples/SR:.0f}s…"
         )
 
-        def tdt_greedy(enc_full: np.ndarray) -> list[int]:
-            t = int(enc_full.shape[2])
-            s1 = np.zeros((2, 1, 640), dtype=np.float32)
-            s2 = np.zeros((2, 1, 640), dtype=np.float32)
-            last_label = BLANK_ID
-            tokens: list[int] = []
-            time_idx = 0
-            while time_idx < t:
-                frame_start = time_idx
-                f = enc_full[:, :, time_idx : time_idx + 1]
-                sym = 0
-                need_loop = True
-                while need_loop and sym < 10:
-                    targets = np.array([[last_label]], dtype=np.int32)
-                    tl = np.array([1], dtype=np.int32)
-                    logits, _pl, s1, s2 = dec_sess.run(
-                        None,
-                        {
-                            "encoder_outputs": f,
-                            "targets": targets,
-                            "target_length": tl,
-                            "input_states_1": s1,
-                            "input_states_2": s2,
-                        },
-                    )
-                    log = logits[0, 0, 0]
-                    tok_logits = log[:-N_DUR]
-                    dur_logits = log[-N_DUR:]
-                    k = int(tok_logits.argmax())
-                    dlp = dur_logits.astype(np.float64) - float(dur_logits.max())
-                    ex = np.exp(dlp)
-                    dlp = dlp - np.log(ex.sum() + 1e-12)
-                    dk = int(dlp.argmax())
-                    skip = DURATIONS[dk]
-                    if k == BLANK_ID:
-                        need_loop = False
-                    else:
-                        tokens.append(k)
-                        last_label = k
-                    sym += 1
-                    time_idx += skip
-                    need_loop = need_loop and (skip == 0)
-                if time_idx <= frame_start:
-                    time_idx = frame_start + 1
-            return tokens
-
         def run_decode_pcm(pcm: np.ndarray) -> str:
-            n = int(pcm.size)
-            if n < 400:
-                return ""
-            pad_to = max(n, MIN_WAVEFORM_PAD_SAMPLES)
-            if n < pad_to:
-                pcm = np.concatenate([pcm, np.zeros(pad_to - n, dtype=np.float32)])
-            wav = pcm.reshape(1, -1).astype(np.float32)
-            wl = np.array([wav.shape[1]], dtype=np.int64)
-            feat, fl = mel_sess.run(None, {"waveforms": wav, "waveforms_lens": wl})
-            sig = feat.astype(np.float32)
-            length = fl.astype(np.int64)
-            enc_out, _elen = enc_sess.run(None, {"audio_signal": sig, "length": length})
-            ids = tdt_greedy(enc_out)
-            return _decode_ids(ids, id_to_piece)
+            return decoder.decode_pcm_mono_16k_f32(pcm)
 
         speech_buf = np.array([], dtype=np.float32)
         transcript = ""
@@ -320,14 +192,16 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
             if n < min_need:
                 return
 
+            # Only drop long buffers that look like silence to BOTH VAD and RMS (avoids wiping real speech
+            # when Silero/webrtc misclassifies quiet or mixed loopback audio).
             if n >= self.min_skip_samples and not self.vad.any_speech(speech_buf):
-                log_line(f"[transcriber] skip silent buffer {n/SR:.1f}s")
-                speech_buf = np.array([], dtype=np.float32)
+                if _buffer_rms(speech_buf) < 0.004:
+                    log_line(f"[transcriber] skip silent buffer {n/SR:.1f}s (vad+rms)")
+                    speech_buf = np.array([], dtype=np.float32)
                 return
 
             trail_sil = self.vad.trailing_silence_seconds(speech_buf)
             hit_max = n >= self.max_samples
-            # End on pause as soon as we have enough samples to decode — do not wait for min_skip_samples.
             hit_pause = (
                 trail_sil >= self.end_silence_sec
                 and n >= MIN_DECODE_SAMPLES
@@ -395,7 +269,8 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                     self._phase("Final utterance…")
                     try_flush_utterance(force_tail=True)
                     if speech_buf.size >= MIN_TAIL_SAMPLES:
-                        if self.vad.any_speech(speech_buf):
+                        rms = _buffer_rms(speech_buf)
+                        if self.vad.any_speech(speech_buf) or rms >= 0.004:
                             tail = self.vad.align_start_with_preroll(speech_buf, self.vad_preroll_sec)
                             self._decoding_start(float(tail.size) / SR)
                             t0 = time.perf_counter()

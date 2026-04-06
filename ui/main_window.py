@@ -665,7 +665,7 @@ class MainWindow:
             transcription_end_silence_sec=float(self._config.get("transcription_end_silence_sec") or 0.8),
             transcription_vad_aggressiveness=int(self._config.get("transcription_vad_aggressiveness") or 2),
             transcription_vad_preroll_sec=float(self._config.get("transcription_vad_preroll_sec", 0.55) or 0.55),
-            transcription_vad_backend=str(self._config.get("transcription_vad_backend") or "auto").strip().lower(),
+            transcription_vad_backend=str(self._config.get("transcription_vad_backend") or "webrtc").strip().lower(),
             transcription_silero_threshold=float(
                 self._config.get("transcription_silero_threshold")
                 if self._config.get("transcription_silero_threshold") is not None
