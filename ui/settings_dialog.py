@@ -178,6 +178,25 @@ class SettingsDialog(tk.Toplevel):
         ).grid(row=row, column=1, sticky="w", padx=(8, 0))
         row += 1
 
+        ttk.Label(frm, text="VAD engine:").grid(row=row, column=0, sticky="w")
+        _vb = str(self._config.get("transcription_vad_backend") or "auto").strip().lower()
+        if _vb not in ("auto", "silero", "webrtc"):
+            _vb = "auto"
+        self._vad_back_var = tk.StringVar(value=_vb)
+        ttk.Combobox(
+            frm,
+            textvariable=self._vad_back_var,
+            values=("auto", "silero", "webrtc"),
+            width=10,
+            state="readonly",
+        ).grid(row=row, column=1, sticky="w", padx=(8, 0))
+        row += 1
+
+        ttk.Label(frm, text="Silero threshold (0.05–0.95, lower=sensitive):").grid(row=row, column=0, sticky="w")
+        self._silero_thr_var = tk.StringVar(value=str(self._config.get("transcription_silero_threshold", 0.35)))
+        ttk.Entry(frm, textvariable=self._silero_thr_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
+        row += 1
+
         ttk.Label(frm, text="Speech start pre-roll (sec):").grid(row=row, column=0, sticky="w")
         self._preroll_var = tk.StringVar(
             value=str(self._config.get("transcription_vad_preroll_sec", 0.55))
@@ -191,9 +210,9 @@ class SettingsDialog(tk.Toplevel):
                 "While you talk, the buffer grows. After a pause (first setting), that phrase is sent to the model — "
                 "short words work; you do not wait for max length. Max length only cuts an uninterrupted monologue. "
                 "Third setting: if the mic picks up no speech for that long, audio is dropped without running ONNX "
-                "(CPU saver only). 0 = least sensitive VAD, 3 = most. "
-                "Pre-roll: extra seconds kept before detected speech start (try 0.8–1.2 if beginnings are cut off). "
-                "pip install webrtcvad recommended."
+                "(CPU saver only). VAD engine: auto uses Silero if package silero-vad-lite is installed (often better "
+                "on short words), else webrtcvad. pip install silero-vad-lite — recommended. Silero threshold only "
+                "applies when Silero is active. Pre-roll: audio kept before detected speech start."
             ),
             font=("TkDefaultFont", 8),
             foreground="gray",
@@ -340,6 +359,14 @@ class SettingsDialog(tk.Toplevel):
         self._config["transcription_vad_aggressiveness"] = max(
             0, min(3, int(self._config["transcription_vad_aggressiveness"]))
         )
+        vb = self._vad_back_var.get().strip().lower()
+        self._config["transcription_vad_backend"] = vb if vb in ("auto", "silero", "webrtc") else "auto"
+        try:
+            self._config["transcription_silero_threshold"] = max(
+                0.05, min(0.95, float(self._silero_thr_var.get().strip() or "0.35"))
+            )
+        except ValueError:
+            self._config["transcription_silero_threshold"] = 0.35
         try:
             self._config["transcription_vad_preroll_sec"] = max(
                 0.0, min(3.0, float(self._preroll_var.get().strip() or "0.55"))

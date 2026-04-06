@@ -60,7 +60,7 @@ Output: `dist\MeetingRecorder\` with `MeetingRecorder.exe` and dependencies.
 - **No microphone / privacy**: Windows **Settings → Privacy → Microphone** — allow access for desktop apps.
 - **PyAudioWPatch**: Wheels are **Windows-only**. Install fails on Linux or macOS by design.
 - **Devices**: Use **Refresh** if you plug in USB audio gear after launch.
-- **Transcription**: Needs a valid **ONNX model folder** and `onnxruntime` (or `onnxruntime-gpu`). If you pick **cuda** but ORT has no CUDA provider, the app falls back to CPU. If live text misbehaves, open **`transcription_debug.log`** next to the exe — it records ONNX load timing and each decode step.
+- **Transcription**: Needs a valid **ONNX model folder** and `onnxruntime` (or `onnxruntime-gpu`). If you pick **cuda** but ORT has no CUDA provider, the app falls back to CPU. If live text misbehaves, open **`transcription_debug.log`** next to the exe — it records ONNX load timing and each decode step. **VAD**: Settings → **VAD engine** — `auto` prefers **Silero** (`silero-vad-lite`, bundled in `requirements.txt`) for short phrases; use **webrtc** to force `webrtcvad` only.
 
 ## License
 

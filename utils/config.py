@@ -27,6 +27,10 @@ DEFAULTS: dict[str, Any] = {
     "transcription_vad_aggressiveness": 2,
     # Seconds of audio kept before VAD/energy-detected speech start (reduces clipped word beginnings).
     "transcription_vad_preroll_sec": 0.55,
+    # VAD backend: auto (prefer Silero if silero-vad-lite installed), silero, webrtc
+    "transcription_vad_backend": "auto",
+    # Silero speech probability threshold (0.05–0.95); lower = more sensitive
+    "transcription_silero_threshold": 0.35,
 }
 
 

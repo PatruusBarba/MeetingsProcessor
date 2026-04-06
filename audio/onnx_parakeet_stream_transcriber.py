@@ -18,7 +18,7 @@ from typing import Callable
 
 import numpy as np
 
-from utils.speech_vad import FRAME_SAMPLES, UtteranceVAD
+from utils.speech_vad import create_stream_vad
 from utils.transcription_log import log_line
 
 BLANK_ID = 8192
@@ -123,6 +123,8 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         end_silence_sec: float,
         vad_aggressiveness: int,
         vad_preroll_sec: float,
+        vad_backend: str,
+        silero_threshold: float,
         on_model_loading: Callable[[], None] | None,
         on_error: Callable[[str], None] | None,
         on_status: Callable[[str], None] | None,
@@ -142,7 +144,12 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         self.end_silence_sec = max(0.25, float(end_silence_sec))
         _pr = float(vad_preroll_sec) if vad_preroll_sec is not None else DEFAULT_VAD_PREROLL_SEC
         self.vad_preroll_sec = max(0.0, min(3.0, _pr))
-        self.vad = UtteranceVAD(aggressiveness=vad_aggressiveness)
+        self.vad, self._vad_align_step, _vad_note = create_stream_vad(
+            vad_backend,
+            vad_aggressiveness,
+            float(silero_threshold),
+        )
+        self._vad_backend_note = _vad_note
         self.on_model_loading = on_model_loading
         self.on_error = on_error
         self.on_status = on_status
@@ -180,7 +187,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         log_line(
             f"[transcriber] VAD utterances skip_if_silent={self.min_skip_samples/SR:.1f}s "
             f"max={self.max_samples/SR:.1f}s end_silence={self.end_silence_sec}s "
-            f"preroll={self.vad_preroll_sec}s"
+            f"preroll={self.vad_preroll_sec}s backend={getattr(self, '_vad_backend_note', '?')}"
         )
 
         def fail(msg: str) -> None:
@@ -235,9 +242,8 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
             fail(f"ONNX load failed: {e}")
             return
 
-        vad_note = "webrtcvad" if self.vad._vad is not None else "energy VAD (pip install webrtcvad)"
         self._phase(
-            f"Listening — utterances by silence ({vad_note}); "
+            f"Listening — utterances by silence ({self._vad_backend_note}); "
             f"skip silent buffers ≥{self.min_skip_samples/SR:.0f}s…"
         )
 
@@ -341,7 +347,8 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
             elif hit_pause and not force_tail:
                 sil_samples = int(round(trail_sil * SR))
                 sil_samples = min(sil_samples, n - MIN_DECODE_SAMPLES)
-                sil_samples = max(0, (sil_samples // FRAME_SAMPLES) * FRAME_SAMPLES)
+                step = self._vad_align_step
+                sil_samples = max(0, (sil_samples // step) * step)
                 cut = n - sil_samples
                 if cut < MIN_DECODE_SAMPLES:
                     return

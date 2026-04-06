@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 
 FRAME_SAMPLES = 480  # 30 ms @ 16 kHz (webrtcvad requirement)
+SILERO_FRAME_SAMPLES = 512  # 32 ms @ 16 kHz (silero-vad-lite)
 
 
 def _f32_to_i16_bytes(chunk: np.ndarray) -> bytes:
@@ -144,3 +147,44 @@ class UtteranceVAD:
         pr = int(max(0.0, float(preroll_sec)) * 16000)
         start = max(0, first - pr)
         return pcm[start:]
+
+
+def create_stream_vad(
+    backend: str,
+    webrtc_aggressiveness: int,
+    silero_threshold: float,
+) -> tuple[Any, int, str]:
+    """
+    Returns (vad_impl, align_samples_for_silence_cut, human_note).
+    vad_impl: any_speech, trailing_silence_seconds, trim_trailing_silence, align_start_with_preroll.
+    """
+    b = (backend or "auto").strip().lower()
+    if b == "silero":
+        try:
+            from utils.silero_vad_backend import SileroUtteranceVAD
+
+            vad = SileroUtteranceVAD(threshold=silero_threshold)
+            return vad, SILERO_FRAME_SAMPLES, f"Silero (threshold {vad.threshold:.2f})"
+        except Exception:
+            pass
+        vad = UtteranceVAD(aggressiveness=webrtc_aggressiveness)
+        note = "webrtcvad" if vad._vad is not None else "energy (webrtcvad/silero unavailable)"
+        return vad, FRAME_SAMPLES, f"{note} (Silero failed, fallback)"
+
+    if b == "webrtc":
+        vad = UtteranceVAD(aggressiveness=webrtc_aggressiveness)
+        note = "webrtcvad" if vad._vad is not None else "energy (pip install webrtcvad)"
+        return vad, FRAME_SAMPLES, note
+
+    # auto
+    try:
+        from utils.silero_vad_backend import SileroUtteranceVAD, silero_available
+
+        if silero_available():
+            vad = SileroUtteranceVAD(threshold=silero_threshold)
+            return vad, SILERO_FRAME_SAMPLES, f"Silero auto (threshold {vad.threshold:.2f})"
+    except Exception:
+        pass
+    vad = UtteranceVAD(aggressiveness=webrtc_aggressiveness)
+    note = "webrtcvad" if vad._vad is not None else "energy (pip install webrtcvad; pip install silero-vad-lite for Silero)"
+    return vad, FRAME_SAMPLES, note
