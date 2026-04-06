@@ -56,6 +56,12 @@ class MainWindow:
         self._stop_in_progress = False
         self._transcription_q: queue.Queue = queue.Queue()
         self._ignore_transcript_phase_updates = False
+        self._listening_phase_text = "Listening…"
+        self._decode_tick_after: str | None = None
+        self._decode_start_m: float | None = None
+        self._decode_est_sec: float = 5.0
+        self._decode_ui_gen: int = 0
+        self._decode_finish_after: str | None = None
 
         self._tray_icon: pystray.Icon | None = None
         self._tray_thread: threading.Thread | None = None
@@ -179,12 +185,110 @@ class MainWindow:
         self._transcript.see(tk.END)
         self._transcript.config(state=tk.DISABLED)
 
+    @staticmethod
+    def _transcript_phase_wants_indeterminate_spinner(msg: str) -> bool:
+        low = msg.lower()
+        if "listening" in low and "utterances" in low:
+            return False
+        if "finished" in low or low.strip().endswith("idle."):
+            return False
+        return any(
+            x in low
+            for x in (
+                "loading",
+                "reading",
+                "checking",
+                "onnx",
+                "vocabulary",
+                "providers",
+                "final utterance",
+                "finishing transcript",
+            )
+        )
+
+    def _cancel_decode_progress_tick(self) -> None:
+        if self._decode_tick_after is not None:
+            try:
+                self.root.after_cancel(self._decode_tick_after)
+            except (tk.TclError, ValueError):
+                pass
+            self._decode_tick_after = None
+        self._decode_start_m = None
+
+    def _tick_decode_progress(self) -> None:
+        self._decode_tick_after = None
+        if self._decode_start_m is None:
+            return
+        import time
+
+        elapsed = time.monotonic() - self._decode_start_m
+        est = max(self._decode_est_sec, 0.8)
+        if elapsed < est:
+            v = int(900 * min(1.0, elapsed / est))
+        else:
+            over = min(1.0, (elapsed - est) / max(est * 0.75, 2.0))
+            v = min(980, 900 + int(80 * over))
+        try:
+            self._transcript_load.config(mode="determinate", value=v)
+        except tk.TclError:
+            return
+        self._decode_tick_after = self.root.after(100, self._tick_decode_progress)
+
+    def _begin_decode_progress_ui(self, audio_sec: float) -> None:
+        self._decode_ui_gen += 1
+        if self._decode_finish_after is not None:
+            try:
+                self.root.after_cancel(self._decode_finish_after)
+            except (tk.TclError, ValueError):
+                pass
+            self._decode_finish_after = None
+        self._cancel_decode_progress_tick()
+        import time
+
+        sec = max(0.1, float(audio_sec))
+        # Rough wall-time hint for CPU ONNX (adjust if needed); caps keep UI responsive.
+        self._decode_est_sec = min(120.0, max(2.5, sec * 0.38))
+        self._decode_start_m = time.monotonic()
+        self._transcript_phase.set(f"Recognizing speech (~{sec:.1f} s audio)…")
+        self._transcript_load.stop()
+        self._transcript_load.grid()
+        self._transcript_load.config(mode="determinate", maximum=1000, value=0)
+        self._tick_decode_progress()
+
+    def _end_decode_progress_ui(self, *, restore_listening_phase: bool = True) -> None:
+        self._cancel_decode_progress_tick()
+        try:
+            self._transcript_load.config(mode="determinate", value=1000)
+        except tk.TclError:
+            pass
+
+        gen = self._decode_ui_gen
+
+        def finish() -> None:
+            self._decode_finish_after = None
+            if gen != self._decode_ui_gen:
+                return
+            self._transcript_load.stop()
+            self._transcript_load.grid_remove()
+            if self._ignore_transcript_phase_updates:
+                self._transcript_phase.set("Recording stopped — finishing transcript…")
+            elif restore_listening_phase:
+                self._transcript_phase.set(self._listening_phase_text)
+
+        self._decode_finish_after = self.root.after(180, finish)
+
     def _set_transcript_phase_ui(self, msg: str, loading: bool) -> None:
         self._transcript_phase.set(msg)
+        low = msg.lower()
+        if "listening" in low:
+            self._listening_phase_text = msg
         if loading:
+            self._transcript_load.stop()
             self._transcript_load.grid()
+            self._transcript_load.config(mode="indeterminate")
             self._transcript_load.start(12)
         else:
+            self._cancel_decode_progress_tick()
             self._transcript_load.stop()
             self._transcript_load.grid_remove()
 
@@ -204,21 +308,18 @@ class MainWindow:
                     if self._ignore_transcript_phase_updates:
                         continue
                     low = payload.lower()
-                    if "ready" in low and "listening" in low:
-                        loading = False
-                    elif "finished" in low:
+                    if "finished" in low:
                         loading = False
                     else:
-                        loading = any(
-                            x in low
-                            for x in (
-                                "loading",
-                                "reading",
-                                "checking",
-                                "final pass",
-                            )
-                        )
+                        loading = self._transcript_phase_wants_indeterminate_spinner(payload)
                     self._set_transcript_phase_ui(payload, loading=loading)
+                elif kind == "decode_start":
+                    info = payload if isinstance(payload, dict) else {}
+                    self._begin_decode_progress_ui(float(info.get("sec", 0.0)))
+                elif kind == "decode_end":
+                    self._end_decode_progress_ui(
+                        restore_listening_phase=not self._ignore_transcript_phase_updates
+                    )
                 elif kind == "append":
                     self._append_transcript_fragment(payload)
                 elif kind == "text":
@@ -535,7 +636,11 @@ class MainWindow:
             self.root.after(0, lambda m=msg: _err(m))
 
         def on_transcription_status(msg: str) -> None:
-            self.root.after(0, lambda m=msg: self._set_transcript_phase_ui(m, loading=True))
+            def _apply(m: str) -> None:
+                spin = self._transcript_phase_wants_indeterminate_spinner(m)
+                self._set_transcript_phase_ui(m, loading=spin)
+
+            self.root.after(0, lambda m=msg: _apply(m))
 
         ok, err = self._engine.start(
             mi,

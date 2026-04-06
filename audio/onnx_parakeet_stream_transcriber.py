@@ -4,7 +4,7 @@ Live Parakeet TDT INT8 ONNX with VAD-gated utterances (not fixed 30 s cuts).
 - Audio from the recorder is always buffered in parallel (decode never blocks capture).
 - Accumulate 16 kHz PCM until at least min_utterance_sec; skip decode if no speech (webrtcvad + energy fallback).
 - Close utterance on end_silence_sec of trailing silence, or at max_utterance_sec (safety cap).
-- Queue: ("phase", str), ("append", str), None
+- Queue: ("phase", str), ("decode_start", {"sec": float}), ("decode_end", {}), ("append", str), None
 """
 
 from __future__ import annotations
@@ -147,6 +147,18 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
             return
         try:
             self.text_queue.put_nowait(("append", fragment + " "))
+        except queue.Full:
+            pass
+
+    def _decoding_start(self, audio_sec: float) -> None:
+        try:
+            self.text_queue.put_nowait(("decode_start", {"sec": float(max(0.0, audio_sec))}))
+        except queue.Full:
+            pass
+
+    def _decoding_end(self) -> None:
+        try:
+            self.text_queue.put_nowait(("decode_end", {}))
         except queue.Full:
             pass
 
@@ -321,8 +333,12 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                 speech_buf = np.concatenate([chunk, rest]) if chunk.size or rest.size else rest
                 return
 
+            self._decoding_start(float(chunk.size) / SR)
             t0 = time.perf_counter()
-            text = run_decode_pcm(chunk)
+            try:
+                text = run_decode_pcm(chunk)
+            finally:
+                self._decoding_end()
             dt = time.perf_counter() - t0
             seg_i += 1
             log_line(
@@ -349,8 +365,13 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                     try_flush_utterance(force_tail=True)
                     if speech_buf.size >= MIN_DECODE_SAMPLES:
                         if self.vad.any_speech(speech_buf):
+                            tail = self.vad.trim_leading_silence(speech_buf, 2.0)
+                            self._decoding_start(float(tail.size) / SR)
                             t0 = time.perf_counter()
-                            text = run_decode_pcm(self.vad.trim_leading_silence(speech_buf, 2.0))
+                            try:
+                                text = run_decode_pcm(tail)
+                            finally:
+                                self._decoding_end()
                             log_line(f"[transcriber] final tail {time.perf_counter()-t0:.2f}s len={len(text)}")
                             if text:
                                 old = transcript
