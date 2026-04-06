@@ -178,13 +178,22 @@ class SettingsDialog(tk.Toplevel):
         ).grid(row=row, column=1, sticky="w", padx=(8, 0))
         row += 1
 
+        ttk.Label(frm, text="Speech start pre-roll (sec):").grid(row=row, column=0, sticky="w")
+        self._preroll_var = tk.StringVar(
+            value=str(self._config.get("transcription_vad_preroll_sec", 0.55))
+        )
+        ttk.Entry(frm, textvariable=self._preroll_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
+        row += 1
+
         hint = ttk.Label(
             frm,
             text=(
                 "While you talk, the buffer grows. After a pause (first setting), that phrase is sent to the model — "
                 "short words work; you do not wait for max length. Max length only cuts an uninterrupted monologue. "
                 "Third setting: if the mic picks up no speech for that long, audio is dropped without running ONNX "
-                "(CPU saver only). 0 = least sensitive VAD, 3 = most. pip install webrtcvad recommended."
+                "(CPU saver only). 0 = least sensitive VAD, 3 = most. "
+                "Pre-roll: extra seconds kept before detected speech start (try 0.8–1.2 if beginnings are cut off). "
+                "pip install webrtcvad recommended."
             ),
             font=("TkDefaultFont", 8),
             foreground="gray",
@@ -331,6 +340,12 @@ class SettingsDialog(tk.Toplevel):
         self._config["transcription_vad_aggressiveness"] = max(
             0, min(3, int(self._config["transcription_vad_aggressiveness"]))
         )
+        try:
+            self._config["transcription_vad_preroll_sec"] = max(
+                0.0, min(3.0, float(self._preroll_var.get().strip() or "0.55"))
+            )
+        except ValueError:
+            self._config["transcription_vad_preroll_sec"] = 0.55
         save_config(self._config)
         self._on_saved(self._config)
         self.destroy()

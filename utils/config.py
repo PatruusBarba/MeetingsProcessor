@@ -25,6 +25,8 @@ DEFAULTS: dict[str, Any] = {
     "transcription_max_utterance_sec": 60.0,
     "transcription_end_silence_sec": 0.8,
     "transcription_vad_aggressiveness": 2,
+    # Seconds of audio kept before VAD/energy-detected speech start (reduces clipped word beginnings).
+    "transcription_vad_preroll_sec": 0.55,
 }
 
 

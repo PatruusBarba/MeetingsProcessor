@@ -664,6 +664,7 @@ class MainWindow:
             transcription_max_utterance_sec=float(self._config.get("transcription_max_utterance_sec") or 60.0),
             transcription_end_silence_sec=float(self._config.get("transcription_end_silence_sec") or 0.8),
             transcription_vad_aggressiveness=int(self._config.get("transcription_vad_aggressiveness") or 2),
+            transcription_vad_preroll_sec=float(self._config.get("transcription_vad_preroll_sec", 0.55) or 0.55),
             on_transcription_model_loading=on_model_loading if trans_on else None,
             on_transcription_error=on_transcription_error if trans_on else None,
             on_transcription_status=on_transcription_status if trans_on else None,

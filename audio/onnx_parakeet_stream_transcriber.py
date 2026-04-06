@@ -29,8 +29,8 @@ SR = 16_000
 MIN_DECODE_SAMPLES = 4_000
 # On recording stop, decode tail if we have at least this much (model pads short input).
 MIN_TAIL_SAMPLES = 800
-# Audio kept before first VAD "speech" frame (VAD lags real onset; avoids clipping word starts).
-START_PREROLL_SEC = 0.55
+# Default if caller omits (normally from settings).
+DEFAULT_VAD_PREROLL_SEC = 0.55
 
 
 def _pcm16_to_f32_mono(mono_bytes: bytes) -> np.ndarray:
@@ -119,6 +119,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         max_utterance_sec: float,
         end_silence_sec: float,
         vad_aggressiveness: int,
+        vad_preroll_sec: float,
         on_model_loading: Callable[[], None] | None,
         on_error: Callable[[str], None] | None,
         on_status: Callable[[str], None] | None,
@@ -136,6 +137,8 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
             self.min_skip_samples + 8_000,
         )
         self.end_silence_sec = max(0.25, float(end_silence_sec))
+        _pr = float(vad_preroll_sec) if vad_preroll_sec is not None else DEFAULT_VAD_PREROLL_SEC
+        self.vad_preroll_sec = max(0.0, min(3.0, _pr))
         self.vad = UtteranceVAD(aggressiveness=vad_aggressiveness)
         self.on_model_loading = on_model_loading
         self.on_error = on_error
@@ -173,7 +176,8 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
     def run(self) -> None:
         log_line(
             f"[transcriber] VAD utterances skip_if_silent={self.min_skip_samples/SR:.1f}s "
-            f"max={self.max_samples/SR:.1f}s end_silence={self.end_silence_sec}s"
+            f"max={self.max_samples/SR:.1f}s end_silence={self.end_silence_sec}s "
+            f"preroll={self.vad_preroll_sec}s"
         )
 
         def fail(msg: str) -> None:
@@ -345,7 +349,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                 chunk = speech_buf.copy()
                 rest = np.array([], dtype=np.float32)
 
-            chunk = self.vad.align_start_with_preroll(chunk, START_PREROLL_SEC)
+            chunk = self.vad.align_start_with_preroll(chunk, self.vad_preroll_sec)
             if chunk.size < MIN_DECODE_SAMPLES:
                 speech_buf = np.concatenate([chunk, rest]) if chunk.size or rest.size else rest
                 return
@@ -382,7 +386,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                     try_flush_utterance(force_tail=True)
                     if speech_buf.size >= MIN_TAIL_SAMPLES:
                         if self.vad.any_speech(speech_buf):
-                            tail = self.vad.align_start_with_preroll(speech_buf, START_PREROLL_SEC)
+                            tail = self.vad.align_start_with_preroll(speech_buf, self.vad_preroll_sec)
                             self._decoding_start(float(tail.size) / SR)
                             t0 = time.perf_counter()
                             try:
