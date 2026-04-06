@@ -20,6 +20,7 @@ DEFAULTS: dict[str, Any] = {
     "transcription_enabled": False,
     "transcription_model_dir": "",
     "transcription_device": "cpu",
+    # Min sec of silence-only audio before skipping ONNX (not "min phrase before decode").
     "transcription_min_utterance_sec": 10.0,
     "transcription_max_utterance_sec": 60.0,
     "transcription_end_silence_sec": 0.8,

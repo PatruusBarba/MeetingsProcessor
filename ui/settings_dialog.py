@@ -152,19 +152,19 @@ class SettingsDialog(tk.Toplevel):
         ).grid(row=row, column=1, sticky="w", padx=(8, 0))
         row += 1
 
-        ttk.Label(frm, text="Min audio (sec) before skip-if-silent:").grid(row=row, column=0, sticky="w")
-        self._min_u_var = tk.StringVar(value=str(self._config.get("transcription_min_utterance_sec", 10.0)))
-        ttk.Entry(frm, textvariable=self._min_u_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(frm, text="Pause at end of phrase (sec) → run recognition:").grid(row=row, column=0, sticky="w")
+        self._sil_var = tk.StringVar(value=str(self._config.get("transcription_end_silence_sec", 0.8)))
+        ttk.Entry(frm, textvariable=self._sil_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
         row += 1
 
-        ttk.Label(frm, text="Max utterance / hard split (sec):").grid(row=row, column=0, sticky="w")
+        ttk.Label(frm, text="Max phrase length (sec), then force split:").grid(row=row, column=0, sticky="w")
         self._max_u_var = tk.StringVar(value=str(self._config.get("transcription_max_utterance_sec", 60.0)))
         ttk.Entry(frm, textvariable=self._max_u_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
         row += 1
 
-        ttk.Label(frm, text="End silence to close utterance (sec):").grid(row=row, column=0, sticky="w")
-        self._sil_var = tk.StringVar(value=str(self._config.get("transcription_end_silence_sec", 0.8)))
-        ttk.Entry(frm, textvariable=self._sil_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(frm, text="Skip ONNX if only silence for (sec):").grid(row=row, column=0, sticky="w")
+        self._min_u_var = tk.StringVar(value=str(self._config.get("transcription_min_utterance_sec", 10.0)))
+        ttk.Entry(frm, textvariable=self._min_u_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
         row += 1
 
         ttk.Label(frm, text="VAD aggressiveness (0–3):").grid(row=row, column=0, sticky="w")
@@ -181,8 +181,10 @@ class SettingsDialog(tk.Toplevel):
         hint = ttk.Label(
             frm,
             text=(
-                "Utterances end after a pause (end silence) or at max length; short phrases decode as soon as you pause. "
-                "Long silent buffers ≥ min (above) are skipped. Install webrtcvad for best VAD."
+                "While you talk, the buffer grows. After a pause (first setting), that phrase is sent to the model — "
+                "short words work; you do not wait for max length. Max length only cuts an uninterrupted monologue. "
+                "Third setting: if the mic picks up no speech for that long, audio is dropped without running ONNX "
+                "(CPU saver only). 0 = least sensitive VAD, 3 = most. pip install webrtcvad recommended."
             ),
             font=("TkDefaultFont", 8),
             foreground="gray",
@@ -311,7 +313,7 @@ class SettingsDialog(tk.Toplevel):
             self._config["transcription_min_utterance_sec"] = 10.0
         try:
             self._config["transcription_max_utterance_sec"] = max(
-                self._config["transcription_min_utterance_sec"] + 1.0,
+                5.0,
                 float(self._max_u_var.get().strip() or "60"),
             )
         except ValueError:
