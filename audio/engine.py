@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import threading
 import time
 from typing import Callable
+
+_log = logging.getLogger(__name__)
 
 import pyaudiowpatch as pyaudio
 
@@ -361,9 +364,16 @@ class RecordingEngine:
 
         if self._writer_thread:
             self._writer_thread.join(timeout=600.0)
+            if self._writer_thread.is_alive():
+                _log.warning("Writer thread did not finish within 600s timeout")
 
         if self._transcriber_thread:
             self._transcriber_thread.join(timeout=600.0)
+            if self._transcriber_thread.is_alive():
+                _log.warning(
+                    "Transcriber thread did not finish within 600s — UI may have frozen during ONNX; "
+                    "daemon thread will be abandoned on exit"
+                )
 
         self._mic_q = None
         self._loop_q = None

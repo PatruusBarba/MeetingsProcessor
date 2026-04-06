@@ -293,11 +293,15 @@ class MainWindow:
             self._transcript_load.grid_remove()
 
     def _poll_transcription(self) -> None:
-        while True:
+        # Drain in small batches so Tk stays responsive (Pause/Stop) during heavy transcript traffic.
+        max_per_tick = 64
+        processed = 0
+        while processed < max_per_tick:
             try:
                 item = self._transcription_q.get_nowait()
             except queue.Empty:
                 break
+            processed += 1
             if item is None:
                 self._ignore_transcript_phase_updates = False
                 self._set_transcript_phase_ui("Transcription: idle.", loading=False)
@@ -326,7 +330,8 @@ class MainWindow:
                     self._set_transcript_text(payload)
             elif isinstance(item, str):
                 self._set_transcript_text(item)
-        self.root.after(120, self._poll_transcription)
+        delay_ms = 1 if processed >= max_per_tick else 120
+        self.root.after(delay_ms, self._poll_transcription)
 
     def _icon_path(self) -> str:
         base = app_dir()

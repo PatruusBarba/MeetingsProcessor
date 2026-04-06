@@ -30,7 +30,7 @@ MIN_DECODE_SAMPLES = 4_000
 # On recording stop, decode tail if we have at least this much (model pads short input).
 MIN_TAIL_SAMPLES = 800
 # Audio kept before first VAD "speech" frame (VAD lags real onset; avoids clipping word starts).
-START_PREROLL_SEC = 0.35
+START_PREROLL_SEC = 0.55
 
 
 def _pcm16_to_f32_mono(mono_bytes: bytes) -> np.ndarray:

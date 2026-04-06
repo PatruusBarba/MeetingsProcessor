@@ -106,15 +106,39 @@ class UtteranceVAD:
                 return i
         return None
 
+    def first_energy_onset_sample(self, pcm: np.ndarray, hop_samples: int = 160) -> int | None:
+        """Earlier weak-onset detection (10 ms steps); webrtcvad often lags real speech start."""
+        n = int(pcm.size)
+        if n < FRAME_SAMPLES:
+            return None
+        hop = max(80, int(hop_samples))
+        thr = float(self._energy_rms) * 0.5
+        for i in range(0, n - FRAME_SAMPLES + 1, hop):
+            frame = pcm[i : i + FRAME_SAMPLES]
+            rms = float(np.sqrt(np.mean(frame * frame)))
+            if rms >= thr:
+                return i
+        return None
+
+    def first_speech_onset_sample(self, pcm: np.ndarray) -> int | None:
+        """Earliest of fine energy onset and VAD speech frame (whichever comes first)."""
+        e = self.first_energy_onset_sample(pcm)
+        v = self.first_speech_frame_start(pcm)
+        if e is None:
+            return v
+        if v is None:
+            return e
+        return min(e, v)
+
     def align_start_with_preroll(self, pcm: np.ndarray, preroll_sec: float) -> np.ndarray:
         """
-        Keep audio from (first VAD speech frame minus preroll). Compensates VAD attack delay
-        and weak syllable onsets that trim_leading_silence would cut off.
+        Keep audio from (first detected speech onset minus preroll). Energy scan catches weak
+        syllable starts before webrtcvad; preroll covers remaining attack delay.
         """
         n = int(pcm.size)
         if n == 0:
             return pcm
-        first = self.first_speech_frame_start(pcm)
+        first = self.first_speech_onset_sample(pcm)
         if first is None:
             return pcm
         pr = int(max(0.0, float(preroll_sec)) * 16000)
