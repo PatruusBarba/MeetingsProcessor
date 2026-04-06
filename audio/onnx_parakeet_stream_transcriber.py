@@ -2,8 +2,8 @@
 Live Parakeet TDT INT8 ONNX with VAD-gated utterances (not fixed 30 s cuts).
 
 - Audio from the recorder is always buffered in parallel (decode never blocks capture).
-- Accumulate 16 kHz PCM until at least min_utterance_sec; skip decode if no speech (webrtcvad + energy fallback).
-- Close utterance on end_silence_sec of trailing silence, or at max_utterance_sec (safety cap).
+- min_utterance_sec: only used to skip decode after long buffers with no speech (save CPU).
+- Close utterance on end_silence_sec of trailing silence once there is enough audio to decode (short phrases OK), or at max_utterance_sec (safety cap).
 - Queue: ("phase", str), ("decode_start", {"sec": float}), ("decode_end", {}), ("append", str), None
 """
 
@@ -27,6 +27,8 @@ N_DUR = len(DURATIONS)
 
 SR = 16_000
 MIN_DECODE_SAMPLES = 4_000
+# On recording stop, decode tail if we have at least this much (model pads short input).
+MIN_TAIL_SAMPLES = 800
 
 
 def _pcm16_to_f32_mono(mono_bytes: bytes) -> np.ndarray:
@@ -125,8 +127,12 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         self.text_queue = text_queue
         self.model_dir = os.path.abspath(model_dir)
         self.device = device
-        self.min_samples = max(int(float(min_utterance_sec) * SR), 8_000)
-        self.max_samples = max(int(float(max_utterance_sec) * SR), self.min_samples + 8_000)
+        # Skip CPU work only after this much audio if VAD sees no speech (not required to end an utterance).
+        self.min_skip_samples = max(int(float(min_utterance_sec) * SR), MIN_DECODE_SAMPLES)
+        self.max_samples = max(
+            int(float(max_utterance_sec) * SR),
+            self.min_skip_samples + 8_000,
+        )
         self.end_silence_sec = max(0.25, float(end_silence_sec))
         self.vad = UtteranceVAD(aggressiveness=vad_aggressiveness)
         self.on_model_loading = on_model_loading
@@ -164,8 +170,8 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
 
     def run(self) -> None:
         log_line(
-            f"[transcriber] VAD utterances min={self.min_samples/SR:.1f}s max={self.max_samples/SR:.1f}s "
-            f"end_silence={self.end_silence_sec}s"
+            f"[transcriber] VAD utterances skip_if_silent={self.min_skip_samples/SR:.1f}s "
+            f"max={self.max_samples/SR:.1f}s end_silence={self.end_silence_sec}s"
         )
 
         def fail(msg: str) -> None:
@@ -221,7 +227,10 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
             return
 
         vad_note = "webrtcvad" if self.vad._vad is not None else "energy VAD (pip install webrtcvad)"
-        self._phase(f"Listening — utterances by silence ({vad_note}), min {self.min_samples/SR:.0f}s…")
+        self._phase(
+            f"Listening — utterances by silence ({vad_note}); "
+            f"skip silent buffers ≥{self.min_skip_samples/SR:.0f}s…"
+        )
 
         def tdt_greedy(enc_full: np.ndarray) -> list[int]:
             t = int(enc_full.shape[2])
@@ -292,17 +301,23 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         def try_flush_utterance(force_tail: bool) -> None:
             nonlocal speech_buf, transcript, seg_i
             n = int(speech_buf.size)
-            if n < self.min_samples and not (force_tail and n >= MIN_DECODE_SAMPLES):
+            min_need = MIN_TAIL_SAMPLES if force_tail else MIN_DECODE_SAMPLES
+            if n < min_need:
                 return
 
-            if n >= self.min_samples and not self.vad.any_speech(speech_buf):
+            if n >= self.min_skip_samples and not self.vad.any_speech(speech_buf):
                 log_line(f"[transcriber] skip silent buffer {n/SR:.1f}s")
                 speech_buf = np.array([], dtype=np.float32)
                 return
 
             trail_sil = self.vad.trailing_silence_seconds(speech_buf)
             hit_max = n >= self.max_samples
-            hit_pause = trail_sil >= self.end_silence_sec and n >= self.min_samples
+            # End on pause as soon as we have enough samples to decode — do not wait for min_skip_samples.
+            hit_pause = (
+                trail_sil >= self.end_silence_sec
+                and n >= MIN_DECODE_SAMPLES
+                and self.vad.any_speech(speech_buf)
+            )
 
             if not force_tail and not hit_max and not hit_pause:
                 return
@@ -316,10 +331,10 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                 rest = speech_buf[cut:].copy()
             elif hit_pause and not force_tail:
                 sil_samples = int(round(trail_sil * SR))
-                sil_samples = min(sil_samples, n - self.min_samples)
+                sil_samples = min(sil_samples, n - MIN_DECODE_SAMPLES)
                 sil_samples = max(0, (sil_samples // FRAME_SAMPLES) * FRAME_SAMPLES)
                 cut = n - sil_samples
-                if cut < self.min_samples:
+                if cut < MIN_DECODE_SAMPLES:
                     return
                 chunk = speech_buf[:cut].copy()
                 chunk = self.vad.trim_trailing_silence(chunk)
@@ -363,7 +378,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                 if item is None:
                     self._phase("Final utterance…")
                     try_flush_utterance(force_tail=True)
-                    if speech_buf.size >= MIN_DECODE_SAMPLES:
+                    if speech_buf.size >= MIN_TAIL_SAMPLES:
                         if self.vad.any_speech(speech_buf):
                             tail = self.vad.trim_leading_silence(speech_buf, 2.0)
                             self._decoding_start(float(tail.size) / SR)

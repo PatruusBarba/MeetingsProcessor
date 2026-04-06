@@ -152,7 +152,7 @@ class SettingsDialog(tk.Toplevel):
         ).grid(row=row, column=1, sticky="w", padx=(8, 0))
         row += 1
 
-        ttk.Label(frm, text="Min utterance before decode (sec):").grid(row=row, column=0, sticky="w")
+        ttk.Label(frm, text="Min audio (sec) before skip-if-silent:").grid(row=row, column=0, sticky="w")
         self._min_u_var = tk.StringVar(value=str(self._config.get("transcription_min_utterance_sec", 10.0)))
         ttk.Entry(frm, textvariable=self._min_u_var, width=10).grid(row=row, column=1, sticky="w", padx=(8, 0))
         row += 1
@@ -181,8 +181,8 @@ class SettingsDialog(tk.Toplevel):
         hint = ttk.Label(
             frm,
             text=(
-                "Utterances grow while someone speaks; they end after silence or at max length. "
-                "Silent buffers are skipped. Install webrtcvad for best VAD (pip install webrtcvad)."
+                "Utterances end after a pause (end silence) or at max length; short phrases decode as soon as you pause. "
+                "Long silent buffers ≥ min (above) are skipped. Install webrtcvad for best VAD."
             ),
             font=("TkDefaultFont", 8),
             foreground="gray",
