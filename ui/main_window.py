@@ -15,11 +15,13 @@ from typing import TYPE_CHECKING
 import pystray
 from PIL import Image, ImageDraw
 
-from audio.devices import AudioDevice, enumerate_devices, open_shared_pyaudio
+from audio.devices import AudioDevice, dev_stub_devices, enumerate_devices, open_shared_pyaudio
 from audio.engine import RecordingEngine
+from audio.dev_recording_engine import DevRecordingEngine
 from ui.settings_dialog import SettingsDialog
 from utils.config import load_config, save_config
 from utils.constants import APP_NAME, app_dir
+from utils.dev_mode import is_dev_ui
 
 if sys.platform == "win32":
     from utils.win32_hotkey_poll import poll_ctrl_shift_r_edge
@@ -31,19 +33,23 @@ if TYPE_CHECKING:
 class MainWindow:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        root.title(APP_NAME)
+        self._dev_ui = is_dev_ui()
+        root.title(f"{APP_NAME} [DEV — no audio]" if self._dev_ui else APP_NAME)
         root.minsize(520, 380)
 
         self._config = load_config()
         self._p_audio: pyaudio.PyAudio | None = None
-        try:
-            self._p_audio = open_shared_pyaudio()
-        except Exception as e:
-            messagebox.showerror(APP_NAME, f"Audio engine failed to start:\n{e}")
-            root.after(100, root.destroy)
-            return
+        if self._dev_ui:
+            self._engine: RecordingEngine | DevRecordingEngine = DevRecordingEngine()
+        else:
+            try:
+                self._p_audio = open_shared_pyaudio()
+            except Exception as e:
+                messagebox.showerror(APP_NAME, f"Audio engine failed to start:\n{e}")
+                root.after(100, root.destroy)
+                return
 
-        self._engine = RecordingEngine(self._p_audio)
+            self._engine = RecordingEngine(self._p_audio)
         self._inputs: list[AudioDevice] = []
         self._outputs: list[AudioDevice] = []
 
@@ -98,26 +104,39 @@ class MainWindow:
         main.grid(row=0, column=0, sticky="nsew")
         main.columnconfigure(1, weight=1)
 
-        ttk.Label(main, text="🎤 Microphone").grid(row=0, column=0, sticky="w")
+        row0 = 0
+        if self._dev_ui:
+            dev_banner = tk.Label(
+                main,
+                text="DEV UI: no WASAPI / no real recording. Use for layout & Settings only.",
+                fg="#8b0000",
+                font=("TkDefaultFont", 9, "bold"),
+                wraplength=500,
+                justify=tk.LEFT,
+            )
+            dev_banner.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+            row0 = 1
+
+        ttk.Label(main, text="🎤 Microphone").grid(row=row0 + 0, column=0, sticky="w")
         self._mic_combo = ttk.Combobox(main, state="readonly", width=55)
-        self._mic_combo.grid(row=0, column=1, sticky="ew", padx=(8, 4))
+        self._mic_combo.grid(row=row0 + 0, column=1, sticky="ew", padx=(8, 4))
         ttk.Button(main, text="⟳", width=3, command=lambda: self._refresh_devices(select_saved=False)).grid(
-            row=0, column=2
+            row=row0 + 0, column=2
         )
         self._mic_level = ttk.Progressbar(main, length=300, mode="determinate", maximum=100)
-        self._mic_level.grid(row=1, column=1, columnspan=2, sticky="ew", pady=(4, 12))
+        self._mic_level.grid(row=row0 + 1, column=1, columnspan=2, sticky="ew", pady=(4, 12))
 
-        ttk.Label(main, text="🔊 System Audio").grid(row=2, column=0, sticky="w")
+        ttk.Label(main, text="🔊 System Audio").grid(row=row0 + 2, column=0, sticky="w")
         self._out_combo = ttk.Combobox(main, state="readonly", width=55)
-        self._out_combo.grid(row=2, column=1, sticky="ew", padx=(8, 4))
+        self._out_combo.grid(row=row0 + 2, column=1, sticky="ew", padx=(8, 4))
         ttk.Button(main, text="⟳", width=3, command=lambda: self._refresh_devices(select_saved=False)).grid(
-            row=2, column=2
+            row=row0 + 2, column=2
         )
         self._sys_level = ttk.Progressbar(main, length=300, mode="determinate", maximum=100)
-        self._sys_level.grid(row=3, column=1, columnspan=2, sticky="ew", pady=(4, 16))
+        self._sys_level.grid(row=row0 + 3, column=1, columnspan=2, sticky="ew", pady=(4, 16))
 
         btn_row = ttk.Frame(main)
-        btn_row.grid(row=4, column=0, columnspan=3, pady=8)
+        btn_row.grid(row=row0 + 4, column=0, columnspan=3, pady=8)
         self._rec_btn = tk.Button(
             btn_row,
             text="● REC",
@@ -133,7 +152,7 @@ class MainWindow:
 
         self._timer_var = tk.StringVar(value="00:00:00")
         ttk.Label(main, textvariable=self._timer_var, font=("TkDefaultFont", 16)).grid(
-            row=5, column=0, columnspan=3, pady=12
+            row=row0 + 5, column=0, columnspan=3, pady=12
         )
 
         trans_lf = ttk.LabelFrame(self.root, text="Live transcript (Parakeet ONNX, offline)", padding=8)
@@ -449,7 +468,7 @@ class MainWindow:
         self._teardown_hotkey()
         if self._tray_icon:
             self._tray_icon.stop()
-        if self._p_audio:
+        if self._p_audio is not None:
             self._p_audio.terminate()
         self.root.destroy()
 
@@ -464,8 +483,11 @@ class MainWindow:
             self._teardown_hotkey()
 
     def _refresh_devices(self, select_saved: bool) -> None:
-        assert self._p_audio is not None
-        self._inputs, self._outputs = enumerate_devices(self._p_audio)
+        if self._dev_ui:
+            self._inputs, self._outputs = dev_stub_devices()
+        else:
+            assert self._p_audio is not None
+            self._inputs, self._outputs = enumerate_devices(self._p_audio)
 
         mic_labels = [d.label() for d in self._inputs]
         out_labels = [d.label() for d in self._outputs]

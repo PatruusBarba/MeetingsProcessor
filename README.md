@@ -2,6 +2,17 @@
 
 Windows desktop app that records your **microphone** and **system audio** (WASAPI loopback) together into a single **mono MP3** file. See [SPEC.md](SPEC.md) for the full technical specification.
 
+## Dev UI (Linux / macOS — no real audio)
+
+To open the **Tk layout** with **stub devices** and a **fake** REC → STOP → “Saved” flow (no WASAPI, no files written):
+
+```bash
+python main.py --dev-ui
+# or: MEETING_RECORDER_DEV_UI=1 python main.py
+```
+
+You need **tkinter** for your Python build. This mode is for **manual UI smoke tests** only; full recording still requires **Windows**.
+
 ## Requirements
 
 - Windows 10 (build 1903+) or later, 64-bit

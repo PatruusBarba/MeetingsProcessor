@@ -206,7 +206,7 @@ class RecordingEngine:
         self._mic_thread: MicCaptureThread | None = None
         self._loop_thread: LoopbackCaptureThread | None = None
         self._writer_thread: WriterThread | None = None
-        self._transcriber_thread: LiveTranscriberThread | None = None
+        self._transcriber_thread: OnnxParakeetLiveTranscriberThread | None = None
         self._transcriber_audio_q: queue.Queue | None = None
 
     def is_recording(self) -> bool:
@@ -255,7 +255,7 @@ class RecordingEngine:
         transcription_end_silence_sec: float = 0.8,
         transcription_vad_aggressiveness: int = 2,
         transcription_vad_preroll_sec: float = 0.55,
-        transcription_vad_backend: str = "auto",
+        transcription_vad_backend: str = "webrtc",
         transcription_silero_threshold: float = 0.35,
         on_transcription_model_loading: Callable[[], None] | None = None,
         on_transcription_error: Callable[[str], None] | None = None,

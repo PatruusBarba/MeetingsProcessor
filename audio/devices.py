@@ -103,3 +103,24 @@ def open_shared_pyaudio():
     """Create one PyAudio instance for the app lifetime."""
     pyaudio = _get_pyaudio()
     return pyaudio.PyAudio()
+
+
+def dev_stub_devices() -> tuple[list[AudioDevice], list[AudioDevice]]:
+    """Fake WASAPI entries for UI smoke tests (MEETING_RECORDER_DEV_UI=1)."""
+    mic = AudioDevice(
+        device_index=0,
+        name="[DEV] Stub microphone",
+        default_sample_rate=48000,
+        max_channels=2,
+        is_loopback=False,
+        host_api="WASAPI",
+    )
+    spk = AudioDevice(
+        device_index=1,
+        name="[DEV] Stub speakers",
+        default_sample_rate=48000,
+        max_channels=2,
+        is_loopback=False,
+        host_api="WASAPI",
+    )
+    return [mic], [spk]
