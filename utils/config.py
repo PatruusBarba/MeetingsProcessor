@@ -27,6 +27,11 @@ DEFAULTS: dict[str, Any] = {
     "transcription_vad_aggressiveness": 1,
     # Seconds of audio kept before VAD/energy-detected speech start (reduces clipped word beginnings).
     "transcription_vad_preroll_sec": 0.55,
+    # LLM analysis
+    "llm_analysis_enabled": False,
+    "llm_base_url": "http://localhost:1234/v1",
+    "llm_model": "",
+    "llm_analysis_interval_sec": 20.0,
 }
 
 

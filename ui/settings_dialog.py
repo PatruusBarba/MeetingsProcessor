@@ -202,6 +202,59 @@ class SettingsDialog(tk.Toplevel):
         hint.grid(row=row, column=0, columnspan=3, sticky="w", pady=(8, 0))
         row += 1
 
+        # ── LLM Analysis ──
+        ttk.Separator(frm, orient="horizontal").grid(row=row, column=0, columnspan=3, sticky="ew", pady=(12, 4))
+        row += 1
+        ttk.Label(frm, text="LLM Analysis", font=("TkDefaultFont", 10, "bold")).grid(
+            row=row, column=0, sticky="w"
+        )
+        row += 1
+
+        self._llm_on = tk.BooleanVar(value=self._config.get("llm_analysis_enabled", False))
+        ttk.Checkbutton(frm, text="Enable LLM key-point analysis", variable=self._llm_on).grid(
+            row=row, column=0, columnspan=3, sticky="w"
+        )
+        row += 1
+
+        ttk.Label(frm, text="Base URL:").grid(row=row, column=0, sticky="w")
+        self._llm_url_var = tk.StringVar(
+            value=self._config.get("llm_base_url", "http://localhost:1234/v1")
+        )
+        ttk.Entry(frm, textvariable=self._llm_url_var, width=40).grid(
+            row=row, column=1, columnspan=2, sticky="w", padx=(8, 0)
+        )
+        row += 1
+
+        ttk.Label(frm, text="Model name:").grid(row=row, column=0, sticky="w")
+        self._llm_model_var = tk.StringVar(value=self._config.get("llm_model", ""))
+        ttk.Entry(frm, textvariable=self._llm_model_var, width=30).grid(
+            row=row, column=1, sticky="w", padx=(8, 0)
+        )
+        row += 1
+
+        ttk.Label(frm, text="Analysis interval (sec):").grid(row=row, column=0, sticky="w")
+        self._llm_interval_var = tk.StringVar(
+            value=str(self._config.get("llm_analysis_interval_sec", 20.0))
+        )
+        ttk.Entry(frm, textvariable=self._llm_interval_var, width=10).grid(
+            row=row, column=1, sticky="w", padx=(8, 0)
+        )
+        row += 1
+
+        llm_hint = ttk.Label(
+            frm,
+            text=(
+                "Uses OpenAI-compatible API (LM Studio, Ollama, etc). "
+                "Leave model name empty to use the server's default model. "
+                "Interval: minimum seconds between analysis requests."
+            ),
+            font=("TkDefaultFont", 8),
+            foreground="gray",
+            wraplength=480,
+        )
+        llm_hint.grid(row=row, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        row += 1
+
         btn_frm = ttk.Frame(frm)
         btn_frm.grid(row=row, column=0, columnspan=3, pady=(16, 0))
         ttk.Button(btn_frm, text="Save", command=self._save).pack(side=tk.LEFT, padx=4)
@@ -346,6 +399,14 @@ class SettingsDialog(tk.Toplevel):
             )
         except ValueError:
             self._config["transcription_vad_preroll_sec"] = 0.55
+        # LLM settings
+        self._config["llm_analysis_enabled"] = self._llm_on.get()
+        self._config["llm_base_url"] = self._llm_url_var.get().strip() or "http://localhost:1234/v1"
+        self._config["llm_model"] = self._llm_model_var.get().strip()
+        try:
+            self._config["llm_analysis_interval_sec"] = max(5.0, float(self._llm_interval_var.get().strip() or "20"))
+        except ValueError:
+            self._config["llm_analysis_interval_sec"] = 20.0
         save_config(self._config)
         self._on_saved(self._config)
         self.destroy()

@@ -19,6 +19,7 @@ from PIL import Image, ImageDraw
 from audio.devices import AudioDevice, enumerate_devices, open_shared_pyaudio
 from audio.engine import RecordingEngine
 from ui.settings_dialog import SettingsDialog
+from utils.llm_analyzer import LlmAnalyzerThread
 from utils.config import load_config, save_config
 from utils.constants import APP_NAME, app_dir
 
@@ -137,8 +138,11 @@ class MainWindow:
             row=5, column=0, columnspan=3, pady=12
         )
 
-        trans_lf = ttk.LabelFrame(self.root, text="Live transcript (Parakeet ONNX, offline)", padding=8)
-        trans_lf.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 4))
+        # ── PanedWindow: transcript (top) + key points (bottom) ──
+        pane = tk.PanedWindow(self.root, orient=tk.VERTICAL, sashwidth=6, sashrelief=tk.RAISED)
+        pane.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 4))
+
+        trans_lf = ttk.LabelFrame(pane, text="Live transcript (Parakeet ONNX, offline)", padding=8)
         trans_lf.columnconfigure(0, weight=1)
         trans_lf.rowconfigure(1, minsize=28)  # progress bar (22px) + pady (6px) — fixed row height
         trans_lf.rowconfigure(2, weight=1)
@@ -170,6 +174,29 @@ class MainWindow:
         self._segments: list[tuple[str, float]] = []  # (tag_name, monotonic_time)
         self._seg_counter = 0
         self._seg_tick_id: str | None = None
+        pane.add(trans_lf, minsize=120, stretch="always")
+
+        # ── Key Points panel ──
+        kp_lf = ttk.LabelFrame(pane, text="Key Points (LLM analysis)", padding=8)
+        kp_lf.columnconfigure(0, weight=1)
+        kp_lf.rowconfigure(1, weight=1)
+        self._kp_status_var = tk.StringVar(value="LLM: disabled")
+        ttk.Label(kp_lf, textvariable=self._kp_status_var, wraplength=520, justify=tk.LEFT).grid(
+            row=0, column=0, sticky="ew", pady=(0, 4)
+        )
+        self._key_points_text = scrolledtext.ScrolledText(
+            kp_lf,
+            height=6,
+            wrap=tk.WORD,
+            font=("Segoe UI", 10) if sys.platform == "win32" else ("TkDefaultFont", 10),
+        )
+        self._key_points_text.grid(row=1, column=0, sticky="nsew")
+        self._key_points_text.bind("<Key>", lambda e: "break")
+        self._key_points_text.bind("<<Paste>>", lambda e: "break")
+        self._key_points_text.bind("<<Cut>>", lambda e: "break")
+        pane.add(kp_lf, minsize=80, stretch="never")
+
+        self._llm_thread: LlmAnalyzerThread | None = None
 
         bottom = ttk.Frame(self.root, padding=(12, 0, 12, 12))
         bottom.grid(row=2, column=0, sticky="ew")
@@ -414,6 +441,8 @@ class MainWindow:
                 self._set_transcript_text(last_full_text)
             if pending_fragments:
                 self._batch_append_transcript(pending_fragments)
+            if last_full_text is not None or pending_fragments:
+                self._feed_llm_transcript()
         except Exception:
             pass  # never break the after() chain
         delay_ms = max(10, 50 - processed) if processed else 120
@@ -531,6 +560,7 @@ class MainWindow:
 
     def _quit_app(self) -> None:
         self._teardown_hotkey()
+        self._stop_llm_analyzer()
         if self._tray_icon:
             self._tray_icon.stop()
 
@@ -787,6 +817,7 @@ class MainWindow:
         self._status_var.set(f"Recording → {wav_path}")
         self._set_tray_state("recording")
         self._style_recording(True)
+        self._start_llm_analyzer()
 
     def _style_recording(self, active: bool) -> None:
         if active:
@@ -835,6 +866,7 @@ class MainWindow:
 
     def _after_engine_stopped(self) -> None:
         self._stop_in_progress = False
+        self._stop_llm_analyzer()
         self._recording_started_monotonic = None
         self._paused_accum_sec = 0.0
         self._pause_started_monotonic = None
@@ -888,6 +920,49 @@ class MainWindow:
         self._stop_btn.config(state=tk.DISABLED)
         self._mic_combo.config(state="readonly")
         self._out_combo.config(state="readonly")
+
+    # ── LLM analysis ──
+
+    def _start_llm_analyzer(self) -> None:
+        """Start LLM analyzer thread if enabled in config."""
+        self._stop_llm_analyzer()
+        if not self._config.get("llm_analysis_enabled", False):
+            self._kp_status_var.set("LLM: disabled")
+            return
+        base_url = self._config.get("llm_base_url", "http://localhost:1234/v1")
+        model = self._config.get("llm_model", "")
+        interval = float(self._config.get("llm_analysis_interval_sec", 20.0))
+
+        def on_result(text: str) -> None:
+            self.root.after(0, lambda t=text: self._on_llm_result(t))
+
+        def on_error(msg: str) -> None:
+            self.root.after(0, lambda m=msg: self._kp_status_var.set(m))
+
+        def on_status(msg: str) -> None:
+            self.root.after(0, lambda m=msg: self._kp_status_var.set(m))
+
+        self._llm_thread = LlmAnalyzerThread(
+            base_url, model, interval, on_result, on_error, on_status,
+        )
+        self._llm_thread.start()
+
+    def _stop_llm_analyzer(self) -> None:
+        if self._llm_thread is not None:
+            self._llm_thread.stop()
+            self._llm_thread = None
+
+    def _feed_llm_transcript(self) -> None:
+        """Send current transcript text to LLM analyzer (if running)."""
+        if self._llm_thread is None:
+            return
+        text = self._transcript.get("1.0", tk.END).strip()
+        if text:
+            self._llm_thread.update_transcript(text)
+
+    def _on_llm_result(self, text: str) -> None:
+        self._key_points_text.delete("1.0", tk.END)
+        self._key_points_text.insert(tk.END, text)
 
     def _on_status_click(self, _ev=None) -> None:
         path = self._last_saved_mp3
