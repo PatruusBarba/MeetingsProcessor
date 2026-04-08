@@ -352,7 +352,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                 chunk = speech_buf.copy()
                 rest = np.array([], dtype=np.float32)
 
-            chunk = self.vad.trim_leading_silence(chunk, max_trim_sec=5.0)
+            chunk = self.vad.trim_leading_silence(chunk, max_trim_sec=5.0, keep_before_speech_sec=2.0)
             if chunk.size < MIN_DECODE_SAMPLES:
                 speech_buf = np.concatenate([chunk, rest]) if chunk.size or rest.size else rest
                 return
@@ -389,7 +389,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                     try_flush_utterance(force_tail=True)
                     if speech_buf.size >= MIN_TAIL_SAMPLES:
                         if self.vad.any_speech(speech_buf):
-                            tail = self.vad.trim_leading_silence(speech_buf, max_trim_sec=5.0)
+                            tail = self.vad.trim_leading_silence(speech_buf, max_trim_sec=5.0, keep_before_speech_sec=2.0)
                             self._decoding_start(float(tail.size) / SR)
                             t0 = time.perf_counter()
                             try:

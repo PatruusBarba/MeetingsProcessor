@@ -1,0 +1,53 @@
+# Build results
+bin/
+obj/
+out/
+
+# .NET
+*.user
+*.suo
+*.cache
+*.dll
+*.pdb
+*.exe
+*.nupkg
+*.snupkg
+
+# NuGet
+packages/
+*.nuget.props
+*.nuget.targets
+
+# IDE
+.vs/
+.vscode/
+*.swp
+*~
+
+# Environment / secrets
+.env
+*.env
+
+# Node.js (legacy)
+node_modules/
+dist/
+
+# Session data
+sessions/
+
+# Markdown docs (except idea.md)
+*.md
+!idea.md
+!SPEC.md
+!DEV_SETUP.md
+
+# WebView2 runtime cache
+*.WebView2/
+
+
+# Portable data directory
+data/
+
+# Publish output
+publish/
+

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<ContentPage xmlns="http://schemas.microsoft.com/dotnet/2021/maui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="BrainstormCompanion.BoardPage"
+             BackgroundColor="#1E1E1E"
+             Title="Board">
+
+    <Grid Padding="0" RowSpacing="0">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Toolbar -->
+        <Grid Grid.Row="0" BackgroundColor="#2D2D2D" Padding="12" ColumnSpacing="8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Label Text="HTML Board" TextColor="#E0E0E0" FontSize="16" 
+                   VerticalOptions="Center" FontAttributes="Bold"/>
+            <Button Grid.Column="1" x:Name="RefreshButton" Text="🔄 Refresh"
+                    BackgroundColor="#0078D4" TextColor="White" FontSize="14"
+                    Clicked="OnRefreshClicked"/>
+        </Grid>
+
+        <!-- WebView for HTML content -->
+        <WebView Grid.Row="1" x:Name="BoardWebView"/>
+    </Grid>
+</ContentPage>
