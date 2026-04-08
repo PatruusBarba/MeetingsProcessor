@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import wave
+from typing import Callable
 
 import lameenc
 
@@ -12,12 +13,14 @@ def wav_to_mp3_mono(
     wav_path: str,
     mp3_path: str,
     bitrate_kbps: int = 128,
+    on_progress: Callable[[float], None] | None = None,
 ) -> None:
     os.makedirs(os.path.dirname(os.path.abspath(mp3_path)) or ".", exist_ok=True)
     with wave.open(wav_path, "rb") as wf:
         channels = wf.getnchannels()
         sample_width = wf.getsampwidth()
         rate = wf.getframerate()
+        total_frames = wf.getnframes()
         if sample_width != 2:
             raise ValueError("Expected 16-bit WAV")
         enc = lameenc.Encoder()
@@ -27,10 +30,13 @@ def wav_to_mp3_mono(
         enc.set_quality(2)
         mp3_data = bytearray()
         chunk_frames = 1152
+        frames_done = 0
         while True:
             raw = wf.readframes(chunk_frames)
             if not raw:
                 break
+            actual = len(raw) // (sample_width * channels)
+            frames_done += actual
             if channels == 2:
                 import array
 
@@ -41,6 +47,8 @@ def wav_to_mp3_mono(
             elif channels != 1:
                 raise ValueError("Unsupported channel count for MP3 export")
             mp3_data.extend(enc.encode(raw))
+            if on_progress and total_frames > 0:
+                on_progress(min(1.0, frames_done / total_frames))
         mp3_data.extend(enc.flush())
     with open(mp3_path, "wb") as out:
         out.write(mp3_data)

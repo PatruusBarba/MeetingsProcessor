@@ -167,11 +167,16 @@ class MainWindow:
         bottom = ttk.Frame(self.root, padding=(12, 0, 12, 12))
         bottom.grid(row=2, column=0, sticky="ew")
         bottom.columnconfigure(0, weight=1)
+        bottom.rowconfigure(1, minsize=26)  # reserve space for convert progress bar
 
         self._status_var = tk.StringVar(value="Ready.")
         self._status_label = ttk.Label(bottom, textvariable=self._status_var, wraplength=480, justify=tk.LEFT)
         self._status_label.grid(row=0, column=0, sticky="w")
         self._status_label.bind("<Button-1>", self._on_status_click)
+
+        self._convert_progress = ttk.Progressbar(bottom, mode="determinate", length=400, maximum=1000)
+        self._convert_progress.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        self._convert_progress.config(style="Hidden.Horizontal.TProgressbar")
 
         ttk.Button(bottom, text="⚙ Settings", command=self._open_settings).grid(row=0, column=1, padx=(8, 0))
 
@@ -655,7 +660,10 @@ class MainWindow:
         def on_convert_error(err: str) -> None:
             self.root.after(0, lambda: self._on_convert_error_ui(err))
 
-        trans_on = bool(self._config.get("transcription_enabled", False))
+        def on_convert_progress(fraction: float) -> None:
+            self.root.after(0, lambda f=fraction: self._on_convert_progress_ui(f))
+
+        trans_on= bool(self._config.get("transcription_enabled", False))
         if trans_on:
             while True:
                 try:
@@ -696,6 +704,7 @@ class MainWindow:
             on_convert_start,
             on_convert_done,
             on_convert_error,
+            on_convert_progress,
             transcription_enabled=trans_on,
             transcription_text_queue=self._transcription_q if trans_on else None,
             transcription_model_dir=str(self._config.get("transcription_model_dir") or ""),
@@ -800,15 +809,25 @@ class MainWindow:
     def _on_convert_start_ui(self) -> None:
         self._converting = True
         self._status_var.set("Converting to MP3…")
+        self._convert_progress.config(style="Horizontal.TProgressbar", value=0)
+
+    def _on_convert_progress_ui(self, fraction: float) -> None:
+        pct = int(fraction * 100)
+        self._convert_progress.config(value=int(fraction * 1000))
+        self._status_var.set(f"Converting to MP3… {pct}%")
 
     def _on_convert_done_ui(self, path: str) -> None:
         self._converting = False
+        self._convert_progress.config(value=1000)
+        self.root.after(300, lambda: self._convert_progress.config(
+            style="Hidden.Horizontal.TProgressbar"))
         self._last_saved_mp3 = path
         self._status_var.set(f"Saved: {path}")
         self._after_stop_cleanup()
 
     def _on_convert_error_ui(self, err: str) -> None:
         self._converting = False
+        self._convert_progress.config(style="Hidden.Horizontal.TProgressbar")
         messagebox.showerror(APP_NAME, f"MP3 conversion failed:\n{err}")
         self._status_var.set("Conversion failed. Check for leftover WAV in output folder.")
         self._after_stop_cleanup()

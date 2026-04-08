@@ -42,6 +42,7 @@ class WriterThread(threading.Thread):
         on_convert_start: Callable[[], None],
         on_convert_done: Callable[[str], None],
         on_convert_error: Callable[[str], None],
+        on_convert_progress: Callable[[float], None] | None = None,
         transcriber_audio_q: queue.Queue | None = None,
     ) -> None:
         super().__init__(daemon=True)
@@ -57,6 +58,7 @@ class WriterThread(threading.Thread):
         self.on_convert_start = on_convert_start
         self.on_convert_done = on_convert_done
         self.on_convert_error = on_convert_error
+        self.on_convert_progress = on_convert_progress
         self.transcriber_audio_q = transcriber_audio_q
 
     def _feed_transcriber(self, mono_pcm: bytes) -> None:
@@ -188,7 +190,8 @@ class WriterThread(threading.Thread):
 
         self.on_convert_start()
         try:
-            wav_to_mp3_mono(self.wav_path, self.mp3_path, MP3_BITRATE_KBPS)
+            wav_to_mp3_mono(self.wav_path, self.mp3_path, MP3_BITRATE_KBPS,
+                            on_progress=self.on_convert_progress)
             self.on_convert_done(self.mp3_path)
         except Exception as e:
             self.on_convert_error(str(e))
@@ -245,6 +248,7 @@ class RecordingEngine:
         on_convert_start: Callable[[], None],
         on_convert_done: Callable[[str], None],
         on_convert_error: Callable[[str], None],
+        on_convert_progress: Callable[[float], None] | None = None,
         *,
         transcription_enabled: bool = False,
         transcription_text_queue: queue.Queue | None = None,
@@ -341,6 +345,7 @@ class RecordingEngine:
             on_convert_start,
             on_convert_done,
             on_convert_error,
+            on_convert_progress=on_convert_progress,
             transcriber_audio_q=trans_q,
         )
 
