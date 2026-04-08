@@ -194,6 +194,12 @@ class MainWindow:
         self._key_points_text.bind("<Key>", lambda e: "break")
         self._key_points_text.bind("<<Paste>>", lambda e: "break")
         self._key_points_text.bind("<<Cut>>", lambda e: "break")
+        self._key_points_text.tag_configure("kp_new", background="#c8f7c5")
+        self._key_points_text.tag_configure("kp_recent", background="#fef9c3")
+        self._kp_segments: list[tuple[str, float]] = []  # (tag_name, monotonic_time)
+        self._kp_seg_counter = 0
+        self._kp_prev_lines: list[str] = []
+        self._kp_tick_id: str | None = None
         pane.add(kp_lf, minsize=250, stretch="always")
 
         self._llm_thread: LlmAnalyzerThread | None = None
@@ -961,8 +967,46 @@ class MainWindow:
             self._llm_thread.update_transcript(text)
 
     def _on_llm_result(self, text: str) -> None:
+        new_lines = [l for l in text.splitlines() if l.strip()]
+        old_set = set(self._kp_prev_lines)
+        now = time.monotonic()
+
         self._key_points_text.delete("1.0", tk.END)
-        self._key_points_text.insert(tk.END, text)
+        for i, line in enumerate(new_lines):
+            if i > 0:
+                self._key_points_text.insert(tk.END, "\n")
+            if line.strip() not in old_set:
+                self._kp_seg_counter += 1
+                tag = f"kp{self._kp_seg_counter}"
+                self._key_points_text.insert(tk.END, line, tag)
+                self._kp_segments.append((tag, now))
+            else:
+                self._key_points_text.insert(tk.END, line)
+
+        self._kp_prev_lines = [l.strip() for l in new_lines]
+        self._start_kp_aging()
+
+    def _start_kp_aging(self) -> None:
+        if self._kp_tick_id is None:
+            self._tick_kp_aging()
+
+    def _tick_kp_aging(self) -> None:
+        self._kp_tick_id = None
+        now = time.monotonic()
+        still_alive = []
+        for tag, t in self._kp_segments:
+            age = now - t
+            if age < 5.0:
+                self._key_points_text.tag_configure(tag, background="#c8f7c5")
+                still_alive.append((tag, t))
+            elif age < 10.0:
+                self._key_points_text.tag_configure(tag, background="#fef9c3")
+                still_alive.append((tag, t))
+            else:
+                self._key_points_text.tag_configure(tag, background="")
+        self._kp_segments = still_alive
+        if self._kp_segments:
+            self._kp_tick_id = self.root.after(500, self._tick_kp_aging)
 
     def _on_status_click(self, _ev=None) -> None:
         path = self._last_saved_mp3
