@@ -146,7 +146,10 @@ class MainWindow:
         )
         self._transcript_load = ttk.Progressbar(trans_lf, mode="indeterminate", length=400)
         self._transcript_load.grid(row=1, column=0, sticky="ew", pady=(0, 6))
-        self._transcript_load.grid_remove()
+        # Start hidden but keep space reserved (no grid_remove — avoids layout jump).
+        self._transcript_load.config(style="Hidden.Horizontal.TProgressbar")
+        style = ttk.Style()
+        style.layout("Hidden.Horizontal.TProgressbar", [])  # empty layout = invisible but keeps space
         self._transcript = scrolledtext.ScrolledText(
             trans_lf,
             height=10,
@@ -171,7 +174,12 @@ class MainWindow:
 
         ttk.Button(bottom, text="⚙ Settings", command=self._open_settings).grid(row=0, column=1, padx=(8, 0))
 
-    def _transcript_see_end(self) -> None:
+    def _show_progress_bar(self) -> None:
+        self._transcript_load.config(style="Horizontal.TProgressbar")
+
+    def _hide_progress_bar(self) -> None:
+        self._transcript_load.stop()
+        self._transcript_load.config(style="Hidden.Horizontal.TProgressbar")
         """Scroll to bottom."""
         self._transcript.see(tk.END)
 
@@ -261,7 +269,7 @@ class MainWindow:
         self._decode_start_m = time.monotonic()
         self._transcript_phase.set(f"Recognizing speech (~{sec:.1f} s audio)…")
         self._transcript_load.stop()
-        self._transcript_load.grid()
+        self._show_progress_bar()
         self._transcript_load.config(mode="determinate", maximum=1000, value=0)
         self._tick_decode_progress()
 
@@ -278,8 +286,7 @@ class MainWindow:
             self._decode_finish_after = None
             if gen != self._decode_ui_gen:
                 return
-            self._transcript_load.stop()
-            self._transcript_load.grid_remove()
+            self._hide_progress_bar()
             if self._ignore_transcript_phase_updates:
                 self._transcript_phase.set("Recording stopped — finishing transcript…")
             elif restore_listening_phase:
@@ -294,13 +301,12 @@ class MainWindow:
             self._listening_phase_text = msg
         if loading:
             self._transcript_load.stop()
-            self._transcript_load.grid()
+            self._show_progress_bar()
             self._transcript_load.config(mode="indeterminate")
             self._transcript_load.start(12)
         else:
             self._cancel_decode_progress_tick()
-            self._transcript_load.stop()
-            self._transcript_load.grid_remove()
+            self._hide_progress_bar()
 
     def _poll_transcription(self) -> None:
         # Drain in small batches so Tk stays responsive during heavy transcript traffic.
