@@ -996,10 +996,10 @@ class MainWindow:
         still_alive = []
         for tag, t in self._kp_segments:
             age = now - t
-            if age < 5.0:
+            if age < 20.0:
                 self._key_points_text.tag_configure(tag, background="#c8f7c5")
                 still_alive.append((tag, t))
-            elif age < 10.0:
+            elif age < 40.0:
                 self._key_points_text.tag_configure(tag, background="#fef9c3")
                 still_alive.append((tag, t))
             else:
