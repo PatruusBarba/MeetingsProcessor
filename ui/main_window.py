@@ -198,7 +198,8 @@ class MainWindow:
         self._key_points_text.tag_configure("kp_recent", background="#fef9c3")
         self._kp_segments: list[tuple[str, float]] = []  # (tag_name, monotonic_time)
         self._kp_seg_counter = 0
-        self._kp_prev_lines: list[str] = []
+        self._kp_prev_lines_set: set[str] = set()
+        self._kp_line_tags: dict[str, str] = {}  # stripped_line → tag
         self._kp_tick_id: str | None = None
         pane.add(kp_lf, minsize=250, stretch="always")
 
@@ -968,22 +969,45 @@ class MainWindow:
 
     def _on_llm_result(self, text: str) -> None:
         new_lines = [l for l in text.splitlines() if l.strip()]
-        old_set = set(self._kp_prev_lines)
         now = time.monotonic()
 
+        # Build lookup: stripped_line → (tag, timestamp) for still-aging lines
+        old_tag_map: dict[str, tuple[str, float]] = {}
+        for tag, t in self._kp_segments:
+            # Find which previous line this tag belonged to
+            for prev_line, prev_tag in self._kp_line_tags.items():
+                if prev_tag == tag:
+                    old_tag_map[prev_line] = (tag, t)
+                    break
+
         self._key_points_text.delete("1.0", tk.END)
+        new_segments: list[tuple[str, float]] = []
+        new_line_tags: dict[str, str] = {}
+
         for i, line in enumerate(new_lines):
             if i > 0:
                 self._key_points_text.insert(tk.END, "\n")
-            if line.strip() not in old_set:
+            stripped = line.strip()
+            if stripped in old_tag_map:
+                # Reuse existing tag and timestamp (preserve aging)
+                tag, t = old_tag_map[stripped]
+                self._key_points_text.insert(tk.END, line, tag)
+                new_segments.append((tag, t))
+                new_line_tags[stripped] = tag
+            elif stripped in self._kp_prev_lines_set:
+                # Old line, aging already finished — no tag needed
+                self._key_points_text.insert(tk.END, line)
+            else:
+                # New/changed line — assign fresh tag
                 self._kp_seg_counter += 1
                 tag = f"kp{self._kp_seg_counter}"
                 self._key_points_text.insert(tk.END, line, tag)
-                self._kp_segments.append((tag, now))
-            else:
-                self._key_points_text.insert(tk.END, line)
+                new_segments.append((tag, now))
+                new_line_tags[stripped] = tag
 
-        self._kp_prev_lines = [l.strip() for l in new_lines]
+        self._kp_segments = new_segments
+        self._kp_line_tags = new_line_tags
+        self._kp_prev_lines_set = {l.strip() for l in new_lines}
         self._start_kp_aging()
 
     def _start_kp_aging(self) -> None:
