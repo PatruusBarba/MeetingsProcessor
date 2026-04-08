@@ -180,6 +180,8 @@ class MainWindow:
     def _hide_progress_bar(self) -> None:
         self._transcript_load.stop()
         self._transcript_load.config(style="Hidden.Horizontal.TProgressbar")
+
+    def _transcript_see_end(self) -> None:
         """Scroll to bottom."""
         self._transcript.see(tk.END)
 
@@ -310,53 +312,54 @@ class MainWindow:
 
     def _poll_transcription(self) -> None:
         # Drain in small batches so Tk stays responsive during heavy transcript traffic.
-        max_per_tick = 64
         processed = 0
-        pending_fragments: list[str] = []
-        last_full_text: str | None = None
-        while processed < max_per_tick:
-            try:
-                item = self._transcription_q.get_nowait()
-            except queue.Empty:
-                break
-            processed += 1
-            if item is None:
-                self._ignore_transcript_phase_updates = False
-                self._set_transcript_phase_ui("Transcription: idle.", loading=False)
-                continue
-            if isinstance(item, tuple) and len(item) == 2:
-                kind, payload = item
-                if kind == "phase":
-                    if self._ignore_transcript_phase_updates:
-                        continue
-                    low = payload.lower()
-                    if "finished" in low:
-                        loading = False
-                    else:
-                        loading = self._transcript_phase_wants_indeterminate_spinner(payload)
-                    self._set_transcript_phase_ui(payload, loading=loading)
-                elif kind == "decode_start":
-                    info = payload if isinstance(payload, dict) else {}
-                    self._begin_decode_progress_ui(float(info.get("sec", 0.0)))
-                elif kind == "decode_end":
-                    self._end_decode_progress_ui(
-                        restore_listening_phase=not self._ignore_transcript_phase_updates
-                    )
-                elif kind == "append":
-                    pending_fragments.append(payload)
-                elif kind == "text":
-                    # Full replacement — flush any pending appends first, then remember
+        try:
+            max_per_tick = 64
+            pending_fragments: list[str] = []
+            last_full_text: str | None = None
+            while processed < max_per_tick:
+                try:
+                    item = self._transcription_q.get_nowait()
+                except queue.Empty:
+                    break
+                processed += 1
+                if item is None:
+                    self._ignore_transcript_phase_updates = False
+                    self._set_transcript_phase_ui("Transcription: idle.", loading=False)
+                    continue
+                if isinstance(item, tuple) and len(item) == 2:
+                    kind, payload = item
+                    if kind == "phase":
+                        if self._ignore_transcript_phase_updates:
+                            continue
+                        low = payload.lower()
+                        if "finished" in low:
+                            loading = False
+                        else:
+                            loading = self._transcript_phase_wants_indeterminate_spinner(payload)
+                        self._set_transcript_phase_ui(payload, loading=loading)
+                    elif kind == "decode_start":
+                        info = payload if isinstance(payload, dict) else {}
+                        self._begin_decode_progress_ui(float(info.get("sec", 0.0)))
+                    elif kind == "decode_end":
+                        self._end_decode_progress_ui(
+                            restore_listening_phase=not self._ignore_transcript_phase_updates
+                        )
+                    elif kind == "append":
+                        pending_fragments.append(payload)
+                    elif kind == "text":
+                        pending_fragments.clear()
+                        last_full_text = payload
+                elif isinstance(item, str):
                     pending_fragments.clear()
-                    last_full_text = payload
-            elif isinstance(item, str):
-                pending_fragments.clear()
-                last_full_text = item
-        # Apply text updates once (not per-item)
-        if last_full_text is not None:
-            self._set_transcript_text(last_full_text)
-        if pending_fragments:
-            self._batch_append_transcript(pending_fragments)
-        # Gradual back-off: 50ms base when idle, faster when busy but never < 10ms
+                    last_full_text = item
+            # Apply text updates once (not per-item)
+            if last_full_text is not None:
+                self._set_transcript_text(last_full_text)
+            if pending_fragments:
+                self._batch_append_transcript(pending_fragments)
+        except Exception:
+            pass  # never break the after() chain
         delay_ms = max(10, 50 - processed) if processed else 120
         self.root.after(delay_ms, self._poll_transcription)
 
