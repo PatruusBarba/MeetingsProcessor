@@ -370,15 +370,15 @@ class RecordingEngine:
             self._loop_thread.join(timeout=15.0)
 
         if self._writer_thread:
-            self._writer_thread.join(timeout=600.0)
+            self._writer_thread.join(timeout=120.0)
             if self._writer_thread.is_alive():
-                _log.warning("Writer thread did not finish within 600s timeout")
+                _log.warning("Writer thread did not finish within 120s timeout")
 
         if self._transcriber_thread:
-            self._transcriber_thread.join(timeout=600.0)
+            self._transcriber_thread.join(timeout=120.0)
             if self._transcriber_thread.is_alive():
                 _log.warning(
-                    "Transcriber thread did not finish within 600s — UI may have frozen during ONNX; "
+                    "Transcriber thread did not finish within 120s — "
                     "daemon thread will be abandoned on exit"
                 )
 

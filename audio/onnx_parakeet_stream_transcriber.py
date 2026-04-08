@@ -325,7 +325,6 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
 
             trail_sil = self.vad.trailing_silence_seconds(speech_buf)
             hit_max = n >= self.max_samples
-            # End on pause as soon as we have enough samples to decode — do not wait for min_skip_samples.
             hit_pause = (
                 trail_sil >= self.end_silence_sec
                 and n >= MIN_DECODE_SAMPLES
@@ -338,7 +337,8 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
             chunk: np.ndarray
             rest: np.ndarray
 
-            if hit_max and not hit_pause and not force_tail:
+            if hit_max and not hit_pause:
+                # Always chunk at max_samples, even when force_tail
                 cut = self.max_samples
                 chunk = speech_buf[:cut].copy()
                 rest = speech_buf[cut:].copy()
@@ -389,25 +389,13 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                     try_flush_utterance(force_tail=False)
                     continue
                 if item is None:
+                    # Drain remaining buffer in max_samples-sized chunks
                     self._phase("Final utterance…")
-                    try_flush_utterance(force_tail=True)
-                    if speech_buf.size >= MIN_TAIL_SAMPLES:
-                        if self.vad.any_speech(speech_buf):
-                            tail = self.vad.trim_leading_silence(speech_buf, max_trim_sec=5.0, keep_before_speech_sec=2.0)
-                            self._decoding_start(float(tail.size) / SR)
-                            t0 = time.perf_counter()
-                            try:
-                                text = run_decode_pcm(tail)
-                            finally:
-                                self._decoding_end()
-                            log_line(f"[transcriber] final tail {time.perf_counter()-t0:.2f}s len={len(text)}")
-                            if text:
-                                old = transcript
-                                transcript = _merge_segment(transcript, text)
-                                if transcript != old:
-                                    d = transcript[len(old) :].lstrip() if transcript.startswith(old) else transcript
-                                    if d:
-                                        self._append_out(d)
+                    while speech_buf.size >= MIN_DECODE_SAMPLES:
+                        prev_size = speech_buf.size
+                        try_flush_utterance(force_tail=True)
+                        if speech_buf.size >= prev_size:
+                            break  # no progress — avoid infinite loop
                     speech_buf = np.array([], dtype=np.float32)
                     break
                 f32 = _pcm16_to_f32_mono(item)
