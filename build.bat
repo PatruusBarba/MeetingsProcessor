@@ -29,7 +29,7 @@ if errorlevel 1 (
 )
 
 echo === Building MeetingRecorder ===
-pyinstaller --noconfirm --onedir --windowed --name MeetingRecorder --icon=assets\icon.ico main.py
+pyinstaller --noconfirm --onedir --windowed --name MeetingRecorder --icon=assets\icon.ico --additional-hooks-dir=hooks main.py
 if errorlevel 1 (
     echo ERROR: PyInstaller build failed.
     exit /b 1
