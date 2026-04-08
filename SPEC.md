@@ -180,7 +180,7 @@ Both streams are mixed down into a single **mono** audio track (both voices in o
 | WAV writer            | `audio/wav_writer.py`   | Receives mic + loopback frames, mixes them to mono, writes to disk incrementally. |
 | MP3 encoder           | `audio/mp3_encoder.py`  | Converts finished WAV to MP3 using `lameenc`, deletes the WAV. |
 | Device enumerator     | `audio/devices.py`      | Wraps PyAudioWPatch device enumeration, returns structured list. |
-| Hotkey listener       | `utils/hotkeys.py`      | Registers global hotkey via `ctypes` + `RegisterHotKey` WinAPI. |
+| Hotkey listener       | `utils/win32_hotkey_poll.py` | Polls Ctrl+Shift+R via `GetAsyncKeyState` from the tk main thread (avoids GIL issues with PyAudio + `RegisterHotKey`/WndProc). |
 | Config manager        | `utils/config.py`       | Read/write `settings.json` from app directory (next to exe). |
 | Constants             | `utils/constants.py`    | App name, version, default paths, sample rate, buffer size. |
 
@@ -263,7 +263,7 @@ MeetingsProcessor/
 │   └── settings_dialog.py
 ├── utils/
 │   ├── __init__.py
-│   ├── hotkeys.py
+│   ├── win32_hotkey_poll.py
 │   ├── config.py
 │   └── constants.py
 └── SPEC.md

@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+*.spec.bak
+settings.json
+transcription_debug.log
+recordings/
+models/
+.venv/
+venv/
+env/

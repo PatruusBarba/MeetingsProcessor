@@ -1,0 +1,8 @@
+PyAudioWPatch>=0.2.12.6
+lameenc>=1.7.0
+pystray>=0.19.5
+Pillow>=10.0.0
+numpy>=1.24.0
+onnxruntime>=1.16.0
+huggingface_hub>=0.20.0
+webrtcvad>=2.0.10
