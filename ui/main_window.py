@@ -171,6 +171,11 @@ class MainWindow:
         """True when the visible area includes the very end of content."""
         return self._transcript.yview()[1] >= 0.99
 
+    def _transcript_see_end(self) -> None:
+        """Scroll to bottom, forcing layout recalc first so the position is accurate."""
+        self._transcript.update_idletasks()
+        self._transcript.see(tk.END)
+
     def _clear_transcript(self) -> None:
         self._transcript.config(state=tk.NORMAL)
         self._transcript.delete("1.0", tk.END)
@@ -181,18 +186,18 @@ class MainWindow:
         self._transcript.config(state=tk.NORMAL)
         self._transcript.delete("1.0", tk.END)
         self._transcript.insert(tk.END, text)
-        if at_bottom:
-            self._transcript.see(tk.END)
         self._transcript.config(state=tk.DISABLED)
+        if at_bottom:
+            self._transcript_see_end()
 
     def _append_transcript_fragment(self, fragment: str) -> None:
         """Single-fragment append (used outside poll batching)."""
         at_bottom = self._is_transcript_scrolled_to_bottom()
         self._transcript.config(state=tk.NORMAL)
         self._transcript.insert(tk.END, fragment)
-        if at_bottom:
-            self._transcript.see(tk.END)
         self._transcript.config(state=tk.DISABLED)
+        if at_bottom:
+            self._transcript_see_end()
 
     def _batch_append_transcript(self, fragments: list[str]) -> None:
         """Append multiple fragments in one widget transaction — single insert + see()."""
@@ -201,9 +206,9 @@ class MainWindow:
         at_bottom = self._is_transcript_scrolled_to_bottom()
         self._transcript.config(state=tk.NORMAL)
         self._transcript.insert(tk.END, "".join(fragments))
-        if at_bottom:
-            self._transcript.see(tk.END)
         self._transcript.config(state=tk.DISABLED)
+        if at_bottom:
+            self._transcript_see_end()
 
     @staticmethod
     def _transcript_phase_wants_indeterminate_spinner(msg: str) -> bool:
