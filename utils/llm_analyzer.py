@@ -20,14 +20,16 @@ STRICT RULES:
 - DO NOT paraphrase or summarize every sentence. Extract only what MATTERS.
 - Focus on: decisions made, action items, important facts/numbers, key opinions, topics discussed.
 - IGNORE filler, repetitions, greetings, small talk.
-- CRITICAL: DO NOT rephrase existing key points. Copy them EXACTLY as given, word for word.
-- Only ADD new points, REMOVE obsolete ones, or UPDATE a point ONLY if new info fundamentally changes its meaning.
+- Keep existing points WORD-FOR-WORD unless they are obsolete or need merging.
+- DO remove points that are redundant, superseded, or no longer relevant.
+- DO merge two related points into one when it makes sense.
+- Only ADD new points when there is genuinely new information.
 - Chronological order (oldest topic first).
 - Write in the SAME language as the transcript.
 """
 
 USER_PROMPT_TEMPLATE = """\
-=== CURRENT KEY POINTS (keep unchanged unless obsolete) ===
+=== CURRENT KEY POINTS ===
 {key_points}
 
 === LATEST TRANSCRIPT CHUNK ===
@@ -36,7 +38,7 @@ USER_PROMPT_TEMPLATE = """\
 === FULL TRANSCRIPT (for context) ===
 {full_transcript}
 
-Return the updated bullet list. IMPORTANT: copy existing points EXACTLY as-is. Only add new points or remove obsolete ones."""
+Return the updated bullet list. Keep unchanged points word-for-word. Remove redundant or obsolete points. Add new ones only for genuinely new info."""
 
 
 class LlmAnalyzerThread(threading.Thread):
