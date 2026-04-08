@@ -34,7 +34,7 @@ class MainWindow:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         root.title(APP_NAME)
-        root.minsize(520, 380)
+        root.minsize(900, 480)
 
         self._config = load_config()
         self._p_audio: pyaudio.PyAudio | None = None
@@ -138,8 +138,8 @@ class MainWindow:
             row=5, column=0, columnspan=3, pady=12
         )
 
-        # ── PanedWindow: transcript (top) + key points (bottom) ──
-        pane = tk.PanedWindow(self.root, orient=tk.VERTICAL, sashwidth=6, sashrelief=tk.RAISED)
+        # ── PanedWindow: transcript (left) + key points (right) ──
+        pane = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashwidth=6, sashrelief=tk.RAISED)
         pane.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 4))
 
         trans_lf = ttk.LabelFrame(pane, text="Live transcript (Parakeet ONNX, offline)", padding=8)
@@ -147,7 +147,7 @@ class MainWindow:
         trans_lf.rowconfigure(1, minsize=28)  # progress bar (22px) + pady (6px) — fixed row height
         trans_lf.rowconfigure(2, weight=1)
         self._transcript_phase = tk.StringVar(value="Transcription: idle.")
-        ttk.Label(trans_lf, textvariable=self._transcript_phase, wraplength=520, justify=tk.LEFT).grid(
+        ttk.Label(trans_lf, textvariable=self._transcript_phase, wraplength=400, justify=tk.LEFT).grid(
             row=0, column=0, sticky="ew", pady=(0, 4)
         )
         self._transcript_load = ttk.Progressbar(trans_lf, mode="indeterminate", length=400)
@@ -174,19 +174,19 @@ class MainWindow:
         self._segments: list[tuple[str, float]] = []  # (tag_name, monotonic_time)
         self._seg_counter = 0
         self._seg_tick_id: str | None = None
-        pane.add(trans_lf, minsize=120, stretch="always")
+        pane.add(trans_lf, minsize=300, stretch="always")
 
-        # ── Key Points panel ──
+        # ── Key Points panel (right side) ──
         kp_lf = ttk.LabelFrame(pane, text="Key Points (LLM analysis)", padding=8)
         kp_lf.columnconfigure(0, weight=1)
         kp_lf.rowconfigure(1, weight=1)
         self._kp_status_var = tk.StringVar(value="LLM: disabled")
-        ttk.Label(kp_lf, textvariable=self._kp_status_var, wraplength=520, justify=tk.LEFT).grid(
+        ttk.Label(kp_lf, textvariable=self._kp_status_var, wraplength=300, justify=tk.LEFT).grid(
             row=0, column=0, sticky="ew", pady=(0, 4)
         )
         self._key_points_text = scrolledtext.ScrolledText(
             kp_lf,
-            height=6,
+            height=10,
             wrap=tk.WORD,
             font=("Segoe UI", 10) if sys.platform == "win32" else ("TkDefaultFont", 10),
         )
@@ -194,7 +194,7 @@ class MainWindow:
         self._key_points_text.bind("<Key>", lambda e: "break")
         self._key_points_text.bind("<<Paste>>", lambda e: "break")
         self._key_points_text.bind("<<Cut>>", lambda e: "break")
-        pane.add(kp_lf, minsize=80, stretch="never")
+        pane.add(kp_lf, minsize=250, stretch="always")
 
         self._llm_thread: LlmAnalyzerThread | None = None
 
