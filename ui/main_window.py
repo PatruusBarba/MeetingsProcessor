@@ -475,14 +475,23 @@ class MainWindow:
             self._quit_app()
 
     def _quit_app(self) -> None:
-        if self._engine.is_recording():
-            self._engine.stop()
         self._teardown_hotkey()
         if self._tray_icon:
             self._tray_icon.stop()
-        if self._p_audio:
-            self._p_audio.terminate()
-        self.root.destroy()
+
+        def _shutdown() -> None:
+            if self._engine.is_recording():
+                self._engine.stop()
+            if self._p_audio:
+                self._p_audio.terminate()
+            self.root.after(0, self.root.destroy)
+
+        if self._engine.is_recording():
+            threading.Thread(target=_shutdown, daemon=True).start()
+        else:
+            if self._p_audio:
+                self._p_audio.terminate()
+            self.root.destroy()
 
     def _open_settings(self) -> None:
         SettingsDialog(self.root, self._config, self._on_settings_saved)
