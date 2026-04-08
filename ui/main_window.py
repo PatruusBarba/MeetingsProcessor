@@ -139,7 +139,7 @@ class MainWindow:
         trans_lf = ttk.LabelFrame(self.root, text="Live transcript (Parakeet ONNX, offline)", padding=8)
         trans_lf.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 4))
         trans_lf.columnconfigure(0, weight=1)
-        trans_lf.rowconfigure(1, minsize=20)  # fixed height for progress bar row — no layout jump
+        trans_lf.rowconfigure(1, minsize=28)  # progress bar (22px) + pady (6px) — fixed row height
         trans_lf.rowconfigure(2, weight=1)
         self._transcript_phase = tk.StringVar(value="Transcription: idle.")
         ttk.Label(trans_lf, textvariable=self._transcript_phase, wraplength=520, justify=tk.LEFT).grid(
