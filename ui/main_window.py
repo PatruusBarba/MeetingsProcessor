@@ -167,7 +167,9 @@ class MainWindow:
 
         ttk.Button(bottom, text="⚙ Settings", command=self._open_settings).grid(row=0, column=1, padx=(8, 0))
 
-    _TRANSCRIPT_MAX_CHARS = 80_000  # scrollback limit (~20 pages)
+    def _is_transcript_scrolled_to_bottom(self) -> bool:
+        """True when the visible area includes the very end of content."""
+        return self._transcript.yview()[1] >= 0.99
 
     def _clear_transcript(self) -> None:
         self._transcript.config(state=tk.NORMAL)
@@ -175,39 +177,33 @@ class MainWindow:
         self._transcript.config(state=tk.DISABLED)
 
     def _set_transcript_text(self, text: str) -> None:
+        at_bottom = self._is_transcript_scrolled_to_bottom()
         self._transcript.config(state=tk.NORMAL)
         self._transcript.delete("1.0", tk.END)
         self._transcript.insert(tk.END, text)
-        self._transcript.see(tk.END)
+        if at_bottom:
+            self._transcript.see(tk.END)
         self._transcript.config(state=tk.DISABLED)
 
     def _append_transcript_fragment(self, fragment: str) -> None:
-        """Low-level single-fragment append (used outside poll batching)."""
+        """Single-fragment append (used outside poll batching)."""
+        at_bottom = self._is_transcript_scrolled_to_bottom()
         self._transcript.config(state=tk.NORMAL)
         self._transcript.insert(tk.END, fragment)
-        self._trim_transcript_scrollback()
-        self._transcript.see(tk.END)
+        if at_bottom:
+            self._transcript.see(tk.END)
         self._transcript.config(state=tk.DISABLED)
 
     def _batch_append_transcript(self, fragments: list[str]) -> None:
-        """Append multiple fragments in one widget transaction — single see() call."""
+        """Append multiple fragments in one widget transaction — single insert + see()."""
         if not fragments:
             return
+        at_bottom = self._is_transcript_scrolled_to_bottom()
         self._transcript.config(state=tk.NORMAL)
-        for frag in fragments:
-            self._transcript.insert(tk.END, frag)
-        self._trim_transcript_scrollback()
-        self._transcript.see(tk.END)
+        self._transcript.insert(tk.END, "".join(fragments))
+        if at_bottom:
+            self._transcript.see(tk.END)
         self._transcript.config(state=tk.DISABLED)
-
-    def _trim_transcript_scrollback(self) -> None:
-        """Drop oldest text if widget exceeds scrollback limit."""
-        end_idx = self._transcript.index(tk.END)
-        total_chars = int(end_idx.split(".")[0]) * 80  # rough estimate
-        if total_chars > self._TRANSCRIPT_MAX_CHARS:
-            # delete first ~20% to avoid trimming every tick
-            cut = f"{int(total_chars * 0.2 / 80)}.0"
-            self._transcript.delete("1.0", cut)
 
     @staticmethod
     def _transcript_phase_wants_indeterminate_spinner(msg: str) -> bool:
