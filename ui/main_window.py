@@ -152,9 +152,13 @@ class MainWindow:
             height=10,
             wrap=tk.WORD,
             font=("Segoe UI", 10) if sys.platform == "win32" else ("TkDefaultFont", 10),
-            state=tk.DISABLED,
         )
         self._transcript.grid(row=2, column=0, sticky="nsew")
+        # Make read-only via key binding instead of state=DISABLED
+        # (DISABLED state breaks see()/yview scroll operations).
+        self._transcript.bind("<Key>", lambda e: "break")
+        self._transcript.bind("<<Paste>>", lambda e: "break")
+        self._transcript.bind("<<Cut>>", lambda e: "break")
 
         bottom = ttk.Frame(self.root, padding=(12, 0, 12, 12))
         bottom.grid(row=2, column=0, sticky="ew")
@@ -168,36 +172,27 @@ class MainWindow:
         ttk.Button(bottom, text="⚙ Settings", command=self._open_settings).grid(row=0, column=1, padx=(8, 0))
 
     def _transcript_see_end(self) -> None:
-        """Scroll to bottom, forcing layout recalc first so the position is accurate."""
-        self._transcript.update_idletasks()
+        """Scroll to bottom."""
         self._transcript.see(tk.END)
 
     def _clear_transcript(self) -> None:
-        self._transcript.config(state=tk.NORMAL)
         self._transcript.delete("1.0", tk.END)
-        self._transcript.config(state=tk.DISABLED)
 
     def _set_transcript_text(self, text: str) -> None:
-        self._transcript.config(state=tk.NORMAL)
         self._transcript.delete("1.0", tk.END)
         self._transcript.insert(tk.END, text)
-        self._transcript.config(state=tk.DISABLED)
         self._transcript_see_end()
 
     def _append_transcript_fragment(self, fragment: str) -> None:
         """Single-fragment append (used outside poll batching)."""
-        self._transcript.config(state=tk.NORMAL)
         self._transcript.insert(tk.END, fragment)
-        self._transcript.config(state=tk.DISABLED)
         self._transcript_see_end()
 
     def _batch_append_transcript(self, fragments: list[str]) -> None:
         """Append multiple fragments in one widget transaction — single insert + see()."""
         if not fragments:
             return
-        self._transcript.config(state=tk.NORMAL)
         self._transcript.insert(tk.END, "".join(fragments))
-        self._transcript.config(state=tk.DISABLED)
         self._transcript_see_end()
 
     @staticmethod
