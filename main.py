@@ -9,6 +9,15 @@ import sys
 
 
 def main() -> None:
+    # PyInstaller --windowed sets stdout/stderr to None; redirect to devnull
+    # so libraries (huggingface_hub, tqdm, etc.) don't crash on .write().
+    import os
+
+    if sys.stdout is None:
+        sys.stdout = open(os.devnull, "w", encoding="utf-8")
+    if sys.stderr is None:
+        sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
     if sys.platform != "win32":
         print("This application requires Windows 10+ with WASAPI.", file=sys.stderr)
         sys.exit(1)
