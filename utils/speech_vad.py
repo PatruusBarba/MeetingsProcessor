@@ -81,8 +81,8 @@ class UtteranceVAD:
             pos = start
         return pcm[:0]
 
-    def trim_leading_silence(self, pcm: np.ndarray, max_trim_sec: float = 2.0) -> np.ndarray:
-        """Drop leading silent frames up to max_trim_sec."""
+    def trim_leading_silence(self, pcm: np.ndarray, max_trim_sec: float = 2.0, keep_before_speech_sec: float = 1.0) -> np.ndarray:
+        """Drop leading silent frames up to max_trim_sec, but keep keep_before_speech_sec before first speech."""
         n = int(pcm.size)
         if n < FRAME_SAMPLES:
             return pcm
@@ -94,7 +94,12 @@ class UtteranceVAD:
                 break
             pos += FRAME_SAMPLES
             dropped += 1
-        return pcm[pos:] if pos > 0 else pcm
+        if pos <= 0:
+            return pcm
+        # Keep some audio before the first speech frame so word onsets aren't clipped.
+        keep_samples = int(keep_before_speech_sec * 16000)
+        start = max(0, pos - keep_samples)
+        return pcm[start:]
 
     def first_speech_frame_start(self, pcm: np.ndarray) -> int | None:
         """Sample index of the first full 30 ms frame classified as speech, or None."""

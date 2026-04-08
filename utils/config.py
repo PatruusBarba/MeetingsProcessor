@@ -23,8 +23,8 @@ DEFAULTS: dict[str, Any] = {
     # Min sec of silence-only audio before skipping ONNX (not "min phrase before decode").
     "transcription_min_utterance_sec": 10.0,
     "transcription_max_utterance_sec": 60.0,
-    "transcription_end_silence_sec": 0.8,
-    "transcription_vad_aggressiveness": 2,
+    "transcription_end_silence_sec": 1.2,
+    "transcription_vad_aggressiveness": 1,
     # Seconds of audio kept before VAD/energy-detected speech start (reduces clipped word beginnings).
     "transcription_vad_preroll_sec": 0.55,
 }
