@@ -198,8 +198,8 @@ class MainWindow:
         self._key_points_text.tag_configure("kp_recent", background="#fef9c3")
         self._kp_segments: list[tuple[str, float]] = []  # (tag_name, monotonic_time)
         self._kp_seg_counter = 0
-        self._kp_prev_lines_set: set[str] = set()
-        self._kp_line_tags: dict[str, str] = {}  # stripped_line → tag
+        self._kp_prev_norms: set[str] = set()
+        self._kp_line_tags: dict[str, str] = {}  # normalized_line → tag
         self._kp_tick_id: str | None = None
         pane.add(kp_lf, minsize=250, stretch="always")
 
@@ -967,17 +967,46 @@ class MainWindow:
         if text:
             self._llm_thread.update_transcript(text)
 
+    @staticmethod
+    def _kp_normalize(s: str) -> str:
+        """Normalize a key-point line for fuzzy comparison."""
+        import re
+        s = s.strip().lower()
+        s = re.sub(r"^[•\-\*]\s*", "", s)  # strip bullet prefix
+        s = re.sub(r"[^\w\s]", "", s)       # strip punctuation
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    def _kp_find_match(self, normalized: str, lookup: dict[str, any]) -> str | None:
+        """Find a fuzzy match in lookup dict (keyed by normalized text)."""
+        if normalized in lookup:
+            return normalized
+        # Check substring overlap for minor rephrasing
+        for old_norm in lookup:
+            if not old_norm or not normalized:
+                continue
+            shorter, longer = (normalized, old_norm) if len(normalized) <= len(old_norm) else (old_norm, normalized)
+            if len(shorter) > 10 and shorter in longer:
+                return old_norm
+            # Word-level overlap: if 70%+ words match, treat as same
+            w_old = set(old_norm.split())
+            w_new = set(normalized.split())
+            if w_old and w_new:
+                overlap = len(w_old & w_new) / max(len(w_old), len(w_new))
+                if overlap >= 0.7:
+                    return old_norm
+        return None
+
     def _on_llm_result(self, text: str) -> None:
         new_lines = [l for l in text.splitlines() if l.strip()]
         now = time.monotonic()
 
-        # Build lookup: stripped_line → (tag, timestamp) for still-aging lines
-        old_tag_map: dict[str, tuple[str, float]] = {}
+        # Build lookup: normalized_line → (tag, timestamp) for still-aging lines
+        aging_map: dict[str, tuple[str, float]] = {}
         for tag, t in self._kp_segments:
-            # Find which previous line this tag belonged to
-            for prev_line, prev_tag in self._kp_line_tags.items():
+            for prev_norm, prev_tag in self._kp_line_tags.items():
                 if prev_tag == tag:
-                    old_tag_map[prev_line] = (tag, t)
+                    aging_map[prev_norm] = (tag, t)
                     break
 
         self._key_points_text.delete("1.0", tk.END)
@@ -987,27 +1016,27 @@ class MainWindow:
         for i, line in enumerate(new_lines):
             if i > 0:
                 self._key_points_text.insert(tk.END, "\n")
-            stripped = line.strip()
-            if stripped in old_tag_map:
-                # Reuse existing tag and timestamp (preserve aging)
-                tag, t = old_tag_map[stripped]
+            norm = self._kp_normalize(line)
+
+            aging_match = self._kp_find_match(norm, aging_map)
+            if aging_match is not None:
+                tag, t = aging_map[aging_match]
                 self._key_points_text.insert(tk.END, line, tag)
                 new_segments.append((tag, t))
-                new_line_tags[stripped] = tag
-            elif stripped in self._kp_prev_lines_set:
-                # Old line, aging already finished — no tag needed
+                new_line_tags[norm] = tag
+            elif self._kp_find_match(norm, {k: True for k in self._kp_prev_norms}) is not None:
+                # Old line, aging finished — no tag
                 self._key_points_text.insert(tk.END, line)
             else:
-                # New/changed line — assign fresh tag
                 self._kp_seg_counter += 1
                 tag = f"kp{self._kp_seg_counter}"
                 self._key_points_text.insert(tk.END, line, tag)
                 new_segments.append((tag, now))
-                new_line_tags[stripped] = tag
+                new_line_tags[norm] = tag
 
         self._kp_segments = new_segments
         self._kp_line_tags = new_line_tags
-        self._kp_prev_lines_set = {l.strip() for l in new_lines}
+        self._kp_prev_norms = {self._kp_normalize(l) for l in new_lines}
         self._start_kp_aging()
 
     def _start_kp_aging(self) -> None:
