@@ -8,6 +8,7 @@ import queue
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 from typing import TYPE_CHECKING
@@ -163,6 +164,12 @@ class MainWindow:
         self._transcript.bind("<Key>", lambda e: "break")
         self._transcript.bind("<<Paste>>", lambda e: "break")
         self._transcript.bind("<<Cut>>", lambda e: "break")
+        # Segment age highlighting: green (<5s), yellow (5-10s), white (>10s)
+        self._transcript.tag_configure("seg_new", background="#c8f7c5")
+        self._transcript.tag_configure("seg_recent", background="#fef9c3")
+        self._segments: list[tuple[str, float]] = []  # (tag_name, monotonic_time)
+        self._seg_counter = 0
+        self._seg_tick_id: str | None = None
 
         bottom = ttk.Frame(self.root, padding=(12, 0, 12, 12))
         bottom.grid(row=2, column=0, sticky="ew")
@@ -191,25 +198,68 @@ class MainWindow:
         """Scroll to bottom."""
         self._transcript.see(tk.END)
 
+    def _next_seg_tag(self) -> str:
+        self._seg_counter += 1
+        return f"seg{self._seg_counter}"
+
     def _clear_transcript(self) -> None:
         self._transcript.delete("1.0", tk.END)
+        self._segments.clear()
 
     def _set_transcript_text(self, text: str) -> None:
         self._transcript.delete("1.0", tk.END)
-        self._transcript.insert(tk.END, text)
+        self._segments.clear()
+        tag = self._next_seg_tag()
+        self._transcript.insert(tk.END, text, tag)
+        self._transcript.tag_configure(tag)
+        self._segments.append((tag, time.monotonic()))
         self._transcript_see_end()
+        self._start_seg_aging()
 
     def _append_transcript_fragment(self, fragment: str) -> None:
         """Single-fragment append (used outside poll batching)."""
-        self._transcript.insert(tk.END, fragment)
+        tag = self._next_seg_tag()
+        self._transcript.insert(tk.END, fragment, tag)
+        self._transcript.tag_configure(tag)
+        self._segments.append((tag, time.monotonic()))
         self._transcript_see_end()
+        self._start_seg_aging()
 
     def _batch_append_transcript(self, fragments: list[str]) -> None:
         """Append multiple fragments in one widget transaction — single insert + see()."""
         if not fragments:
             return
-        self._transcript.insert(tk.END, "".join(fragments))
+        now = time.monotonic()
+        tag = self._next_seg_tag()
+        self._transcript.insert(tk.END, "".join(fragments), tag)
+        self._transcript.tag_configure(tag)
+        self._segments.append((tag, now))
         self._transcript_see_end()
+        self._start_seg_aging()
+
+    def _start_seg_aging(self) -> None:
+        """Ensure the segment color aging tick is running."""
+        if self._seg_tick_id is None:
+            self._tick_seg_aging()
+
+    def _tick_seg_aging(self) -> None:
+        """Update segment colors based on age, prune old segments."""
+        self._seg_tick_id = None
+        now = time.monotonic()
+        still_alive = []
+        for tag, t in self._segments:
+            age = now - t
+            if age < 5.0:
+                self._transcript.tag_configure(tag, background="#c8f7c5")
+                still_alive.append((tag, t))
+            elif age < 10.0:
+                self._transcript.tag_configure(tag, background="#fef9c3")
+                still_alive.append((tag, t))
+            else:
+                self._transcript.tag_configure(tag, background="")
+        self._segments = still_alive
+        if self._segments:
+            self._seg_tick_id = self.root.after(500, self._tick_seg_aging)
 
     @staticmethod
     def _transcript_phase_wants_indeterminate_spinner(msg: str) -> bool:
