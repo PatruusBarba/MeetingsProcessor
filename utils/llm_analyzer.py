@@ -10,31 +10,33 @@ from typing import Callable
 _log = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
-You are an AI assistant analyzing a live meeting transcript.
-Your task: extract and maintain a concise list of KEY POINTS discussed so far.
+You are an AI assistant analyzing a live meeting transcript in real time.
+Your ONLY job: maintain a SHORT list of high-level KEY TAKEAWAYS — the important decisions, facts, conclusions, action items, or topics being discussed.
 
-Rules:
-- Output ONLY a bullet list of key points (use "- " prefix).
-- Each point should be one clear, concise sentence.
-- Merge or update existing points when new context refines them.
-- Remove points that are no longer relevant or were superseded.
-- Keep the list ordered chronologically (oldest first).
-- Do NOT add commentary, headers, or any text outside the bullet list.
-- If the transcript is too short or unclear, output a single point summarizing what's available.
+STRICT RULES:
+- Output ONLY a bullet list (use "• " prefix). NO headers, NO commentary, NO numbering.
+- MAX 7-10 bullet points. Fewer is better. Merge related ideas into one point.
+- Each bullet = one concise phrase or short sentence (max ~15 words).
+- DO NOT paraphrase or summarize every sentence. Extract only what MATTERS.
+- Focus on: decisions made, action items, important facts/numbers, key opinions, topics discussed.
+- IGNORE filler, repetitions, greetings, small talk.
+- When new info refines an existing point, UPDATE it in place — don't add a duplicate.
+- Remove points that become irrelevant as the conversation evolves.
+- Chronological order (oldest topic first).
 - Write in the SAME language as the transcript.
 """
 
 USER_PROMPT_TEMPLATE = """\
-=== CURRENT KEY POINTS ===
+=== CURRENT KEY POINTS (update these) ===
 {key_points}
 
-=== NEW TRANSCRIPT (since last analysis) ===
+=== LATEST TRANSCRIPT CHUNK ===
 {new_transcript}
 
-=== FULL TRANSCRIPT ===
+=== FULL TRANSCRIPT (for context) ===
 {full_transcript}
 
-Update the key points list based on the full transcript. Return ONLY the updated bullet list."""
+Analyze the transcript and return ONLY the updated bullet list of key takeaways. Be concise — extract insights, don't paraphrase."""
 
 
 class LlmAnalyzerThread(threading.Thread):
@@ -135,8 +137,8 @@ class LlmAnalyzerThread(threading.Thread):
                         {"role": "system", "content": SYSTEM_PROMPT},
                         {"role": "user", "content": user_msg},
                     ],
-                    temperature=0.3,
-                    max_tokens=1024,
+                    temperature=0.2,
+                    max_tokens=512,
                 )
                 result = resp.choices[0].message.content.strip()
                 with self._lock:
