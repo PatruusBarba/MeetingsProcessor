@@ -256,7 +256,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                 while need_loop and sym < 10:
                     targets = np.array([[last_label]], dtype=np.int32)
                     tl = np.array([1], dtype=np.int32)
-                    logits, _pl, s1, s2 = dec_sess.run(
+                    out_logits, _pl, out_s1, out_s2 = dec_sess.run(
                         None,
                         {
                             "encoder_outputs": f,
@@ -266,7 +266,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                             "input_states_2": s2,
                         },
                     )
-                    log = logits[0, 0, 0]
+                    log = out_logits[0, 0, 0]
                     tok_logits = log[:-N_DUR]
                     dur_logits = log[-N_DUR:]
                     k = int(tok_logits.argmax())
@@ -278,6 +278,9 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                     if k == BLANK_ID:
                         need_loop = False
                     else:
+                        # Only update decoder states on non-blank tokens.
+                        s1 = out_s1
+                        s2 = out_s2
                         tokens.append(k)
                         last_label = k
                     sym += 1
@@ -291,11 +294,12 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
             n = int(pcm.size)
             if n < 400:
                 return ""
+            actual_len = n
             pad_to = max(n, MIN_WAVEFORM_PAD_SAMPLES)
             if n < pad_to:
                 pcm = np.concatenate([pcm, np.zeros(pad_to - n, dtype=np.float32)])
             wav = pcm.reshape(1, -1).astype(np.float32)
-            wl = np.array([wav.shape[1]], dtype=np.int64)
+            wl = np.array([actual_len], dtype=np.int64)
             feat, fl = mel_sess.run(None, {"waveforms": wav, "waveforms_lens": wl})
             sig = feat.astype(np.float32)
             length = fl.astype(np.int64)
