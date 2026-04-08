@@ -911,6 +911,7 @@ class MainWindow:
         self.root.after(300, lambda: self._convert_progress.config(
             style="Hidden.Horizontal.TProgressbar"))
         self._last_saved_mp3 = path
+        self._save_transcript_file(path)
         self._status_var.set(f"Saved: {path}")
         self._after_stop_cleanup()
 
@@ -927,6 +928,25 @@ class MainWindow:
         self._stop_btn.config(state=tk.DISABLED)
         self._mic_combo.config(state="readonly")
         self._out_combo.config(state="readonly")
+
+    def _save_transcript_file(self, mp3_path: str) -> None:
+        """Save transcript text next to the MP3 file with matching name."""
+        text = self._transcript.get("1.0", tk.END).strip()
+        if not text:
+            return
+        txt_path = os.path.splitext(mp3_path)[0] + ".txt"
+        try:
+            with open(txt_path, "w", encoding="utf-8") as f:
+                f.write(text)
+            # Also save key points if available
+            kp = self._key_points_text.get("1.0", tk.END).strip()
+            if kp:
+                kp_path = os.path.splitext(mp3_path)[0] + "_keypoints.txt"
+                with open(kp_path, "w", encoding="utf-8") as f:
+                    f.write(kp)
+        except Exception as e:
+            _log = __import__("logging").getLogger(__name__)
+            _log.warning("Failed to save transcript: %s", e)
 
     # ── LLM analysis ──
 
