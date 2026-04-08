@@ -167,6 +167,8 @@ class MainWindow:
 
         ttk.Button(bottom, text="⚙ Settings", command=self._open_settings).grid(row=0, column=1, padx=(8, 0))
 
+    _TRANSCRIPT_MAX_CHARS = 80_000  # scrollback limit (~20 pages)
+
     def _clear_transcript(self) -> None:
         self._transcript.config(state=tk.NORMAL)
         self._transcript.delete("1.0", tk.END)
@@ -180,10 +182,32 @@ class MainWindow:
         self._transcript.config(state=tk.DISABLED)
 
     def _append_transcript_fragment(self, fragment: str) -> None:
+        """Low-level single-fragment append (used outside poll batching)."""
         self._transcript.config(state=tk.NORMAL)
         self._transcript.insert(tk.END, fragment)
+        self._trim_transcript_scrollback()
         self._transcript.see(tk.END)
         self._transcript.config(state=tk.DISABLED)
+
+    def _batch_append_transcript(self, fragments: list[str]) -> None:
+        """Append multiple fragments in one widget transaction — single see() call."""
+        if not fragments:
+            return
+        self._transcript.config(state=tk.NORMAL)
+        for frag in fragments:
+            self._transcript.insert(tk.END, frag)
+        self._trim_transcript_scrollback()
+        self._transcript.see(tk.END)
+        self._transcript.config(state=tk.DISABLED)
+
+    def _trim_transcript_scrollback(self) -> None:
+        """Drop oldest text if widget exceeds scrollback limit."""
+        end_idx = self._transcript.index(tk.END)
+        total_chars = int(end_idx.split(".")[0]) * 80  # rough estimate
+        if total_chars > self._TRANSCRIPT_MAX_CHARS:
+            # delete first ~20% to avoid trimming every tick
+            cut = f"{int(total_chars * 0.2 / 80)}.0"
+            self._transcript.delete("1.0", cut)
 
     @staticmethod
     def _transcript_phase_wants_indeterminate_spinner(msg: str) -> bool:
@@ -293,9 +317,11 @@ class MainWindow:
             self._transcript_load.grid_remove()
 
     def _poll_transcription(self) -> None:
-        # Drain in small batches so Tk stays responsive (Pause/Stop) during heavy transcript traffic.
+        # Drain in small batches so Tk stays responsive during heavy transcript traffic.
         max_per_tick = 64
         processed = 0
+        pending_fragments: list[str] = []
+        last_full_text: str | None = None
         while processed < max_per_tick:
             try:
                 item = self._transcription_q.get_nowait()
@@ -325,12 +351,21 @@ class MainWindow:
                         restore_listening_phase=not self._ignore_transcript_phase_updates
                     )
                 elif kind == "append":
-                    self._append_transcript_fragment(payload)
+                    pending_fragments.append(payload)
                 elif kind == "text":
-                    self._set_transcript_text(payload)
+                    # Full replacement — flush any pending appends first, then remember
+                    pending_fragments.clear()
+                    last_full_text = payload
             elif isinstance(item, str):
-                self._set_transcript_text(item)
-        delay_ms = 1 if processed >= max_per_tick else 120
+                pending_fragments.clear()
+                last_full_text = item
+        # Apply text updates once (not per-item)
+        if last_full_text is not None:
+            self._set_transcript_text(last_full_text)
+        if pending_fragments:
+            self._batch_append_transcript(pending_fragments)
+        # Gradual back-off: 50ms base when idle, faster when busy but never < 10ms
+        delay_ms = max(10, 50 - processed) if processed else 120
         self.root.after(delay_ms, self._poll_transcription)
 
     def _icon_path(self) -> str:
