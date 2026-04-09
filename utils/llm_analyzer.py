@@ -16,7 +16,6 @@ Your ONLY job: maintain a SHORT list of high-level KEY TAKEAWAYS — the importa
 
 STRICT RULES:
 - Output ONLY a bullet list (use "• " prefix). NO headers, NO commentary, NO numbering.
-- Do NOT use <think> tags, reasoning blocks, or chain-of-thought. Respond DIRECTLY with the bullet list.
 - MAX 7-10 bullet points. Fewer is better. Merge related ideas into one point.
 - Each bullet = one concise phrase or short sentence (max ~15 words).
 - DO NOT paraphrase or summarize every sentence. Extract only what MATTERS.
