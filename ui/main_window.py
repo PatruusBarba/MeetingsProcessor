@@ -197,6 +197,7 @@ class MainWindow:
         self._key_points_text.tag_configure("kp_new", background="#c8f7c5")
         self._key_points_text.tag_configure("kp_recent", background="#fef9c3")
         self._key_points_text.tag_configure("kp_cursor", background="#4a90d9", foreground="white")
+        self._key_points_text.tag_configure("kp_stream_new", background="#c8f7c5")
         self._kp_segments: list[tuple[str, float]] = []  # (tag_name, monotonic_time)
         self._kp_seg_counter = 0
         self._kp_prev_norms: set[str] = set()
@@ -205,6 +206,9 @@ class MainWindow:
         self._kp_streaming = False
         self._kp_stream_buf = ""  # accumulated streamed text so far
         self._kp_old_text = ""    # text in widget before stream started
+        self._kp_stream_aging_map: dict[str, tuple[str, float]] = {}
+        self._kp_stream_old_norms: set[str] = set()
+        self._kp_last_render = 0.0
         pane.add(kp_lf, minsize=250, stretch="always")
 
         self._llm_thread: LlmAnalyzerThread | None = None
@@ -1045,70 +1049,102 @@ class MainWindow:
         return None
 
     def _on_llm_stream_start(self) -> None:
-        """Called when LLM starts generating — save old text, show cursor at position 1.0."""
+        """Called when LLM starts generating — save old text, build color map, show cursor."""
         self._kp_streaming = True
         self._kp_stream_buf = ""
-        self._kp_old_text = self._key_points_text.get("1.0", tk.END).rstrip("\n")
+        self._kp_last_render = 0.0
+        w = self._key_points_text
+        self._kp_old_text = w.get("1.0", tk.END).rstrip("\n")
+        # Snapshot aging state so we can re-apply colors during streaming
+        self._kp_stream_aging_map = {}
+        for tag, t in self._kp_segments:
+            for prev_norm, prev_tag in self._kp_line_tags.items():
+                if prev_tag == tag:
+                    self._kp_stream_aging_map[prev_norm] = (tag, t)
+                    break
+        self._kp_stream_old_norms = set(self._kp_prev_norms)
         # Place cursor at beginning
-        self._key_points_text.tag_remove("kp_cursor", "1.0", tk.END)
-        self._key_points_text.insert("1.0", "▌", "kp_cursor")
+        w.tag_remove("kp_cursor", "1.0", tk.END)
+        w.insert("1.0", "▌", "kp_cursor")
 
     def _on_llm_chunk(self, token: str) -> None:
         """Called for each streamed token — progressively replace text with cursor."""
         if not self._kp_streaming:
             return
         self._kp_stream_buf += token
-        self._render_kp_stream()
+        now = time.monotonic()
+        if now - self._kp_last_render >= 0.05:  # 50ms throttle (~20 fps)
+            self._kp_last_render = now
+            self._render_kp_stream()
 
     def _render_kp_stream(self) -> None:
-        """Render streamed text progressively, replacing old text char-by-char with cursor."""
+        """Render streamed text progressively with age colors preserved."""
         new_text = self._kp_stream_buf
         old_text = self._kp_old_text
         w = self._key_points_text
-
-        # Remove cursor marker
-        w.tag_remove("kp_cursor", "1.0", tk.END)
-        # Find cursor marker and remove it
-        content = w.get("1.0", tk.END).rstrip("\n")
-        cursor_pos = content.find("▌")
-        if cursor_pos >= 0:
-            # Delete the cursor character
-            idx = f"1.0 + {cursor_pos} chars"
-            w.delete(idx, f"{idx} + 1 chars")
-
-        # Now the widget has old text (possibly partially overwritten).
-        # Strategy: clear everything and write new_text up to current stream position,
-        # then keep remaining old text after that, then put cursor.
-        new_len = len(new_text)
-        old_len = len(old_text)
-
-        # Find how much of new_text matches old_text from the start
-        common_prefix = 0
-        while common_prefix < new_len and common_prefix < old_len:
-            if new_text[common_prefix] == old_text[common_prefix]:
-                common_prefix += 1
-            else:
-                break
-
-        # Rebuild widget content:
-        # [new_text] + [cursor ▌] + [remaining old_text after new_len if any]
         w.delete("1.0", tk.END)
 
-        # Insert the new (streamed) text
-        if new_text:
-            w.insert(tk.END, new_text)
+        aging_map = self._kp_stream_aging_map
+        old_norms = self._kp_stream_old_norms
 
-        # Insert cursor
+        # Split new text into completed lines and incomplete tail
+        new_parts = new_text.split("\n")
+        completed_lines = new_parts[:-1]
+        tail = new_parts[-1]
+
+        # Remaining old text past the cursor position
+        old_remaining = old_text[len(new_text):] if len(old_text) > len(new_text) else ""
+        rem_parts = old_remaining.split("\n", 1)
+        old_partial = rem_parts[0]
+        old_lines_after = rem_parts[1].split("\n") if len(rem_parts) > 1 else []
+
+        # --- Section A: completed new lines with color ---
+        for i, line in enumerate(completed_lines):
+            if i > 0:
+                w.insert(tk.END, "\n")
+            if not line.strip():
+                w.insert(tk.END, line)
+                continue
+            norm = self._kp_normalize(line)
+            match = self._kp_find_match(norm, aging_map)
+            if match is not None:
+                tag, _ = aging_map[match]
+                w.insert(tk.END, line, tag)        # existing age color
+            elif self._kp_find_match(norm, {k: True for k in old_norms}) is not None:
+                w.insert(tk.END, line)              # known old, white
+            else:
+                w.insert(tk.END, line, "kp_stream_new")  # new → green
+
+        # Newline before tail (if completed lines present)
+        if completed_lines:
+            w.insert(tk.END, "\n")
+
+        # --- Section B: incomplete tail + cursor + rest of old line ---
+        if tail:
+            w.insert(tk.END, tail)
         w.insert(tk.END, "▌", "kp_cursor")
+        if old_partial:
+            w.insert(tk.END, old_partial)
 
-        # If old text extends beyond what we've streamed, show the rest dimmed
-        if old_len > new_len:
-            remaining_old = old_text[new_len:]
-            w.insert(tk.END, remaining_old)
+        # --- Section C: remaining old lines with their age colors ---
+        for line in old_lines_after:
+            w.insert(tk.END, "\n")
+            if not line.strip():
+                w.insert(tk.END, line)
+                continue
+            norm = self._kp_normalize(line)
+            match = self._kp_find_match(norm, aging_map)
+            if match is not None:
+                tag, _ = aging_map[match]
+                w.insert(tk.END, line, tag)
+            else:
+                w.insert(tk.END, line)
 
     def _on_llm_stream_done(self, full_text: str) -> None:
-        """Called when streaming finishes — remove cursor, clean up."""
+        """Called when streaming finishes — final render, remove cursor, clean up."""
         self._kp_streaming = False
+        # Final render to catch any un-rendered tokens
+        self._render_kp_stream()
         # Remove cursor
         w = self._key_points_text
         content = w.get("1.0", tk.END).rstrip("\n")
