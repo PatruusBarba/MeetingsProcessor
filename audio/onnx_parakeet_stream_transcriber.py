@@ -389,9 +389,12 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                     try_flush_utterance(force_tail=False)
                     continue
                 if item is None:
-                    # Drain remaining buffer in max_samples-sized chunks
+                    # Drain remaining buffer in max_samples-sized chunks (capped iterations)
                     self._phase("Final utterance…")
-                    while speech_buf.size >= MIN_DECODE_SAMPLES:
+                    max_iters = max(1, int(speech_buf.size / MIN_DECODE_SAMPLES) + 1)
+                    for _ in range(max_iters):
+                        if speech_buf.size < MIN_DECODE_SAMPLES:
+                            break
                         prev_size = speech_buf.size
                         try_flush_utterance(force_tail=True)
                         if speech_buf.size >= prev_size:

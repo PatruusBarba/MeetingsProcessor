@@ -878,6 +878,18 @@ class MainWindow:
         self._paused_accum_sec = 0.0
         self._pause_started_monotonic = None
 
+        # Force-clear transcript phase state so it never gets stuck on "finishing transcript"
+        self._ignore_transcript_phase_updates = False
+        if self._decode_finish_after is not None:
+            try:
+                self.root.after_cancel(self._decode_finish_after)
+            except (tk.TclError, ValueError):
+                pass
+            self._decode_finish_after = None
+        self._cancel_decode_progress_tick()
+        self._hide_progress_bar()
+        self._set_transcript_phase_ui("Transcription: idle.", loading=False)
+
         self._rec_btn.config(state=tk.NORMAL)
         self._pause_btn.config(state=tk.DISABLED, text="❚❚ PAUSE")
         self._stop_btn.config(state=tk.DISABLED)
