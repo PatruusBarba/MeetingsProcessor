@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from typing import Callable
@@ -15,6 +16,7 @@ Your ONLY job: maintain a SHORT list of high-level KEY TAKEAWAYS — the importa
 
 STRICT RULES:
 - Output ONLY a bullet list (use "• " prefix). NO headers, NO commentary, NO numbering.
+- Do NOT use <think> tags, reasoning blocks, or chain-of-thought. Respond DIRECTLY with the bullet list.
 - MAX 7-10 bullet points. Fewer is better. Merge related ideas into one point.
 - Each bullet = one concise phrase or short sentence (max ~15 words).
 - DO NOT paraphrase or summarize every sentence. Extract only what MATTERS.
@@ -84,6 +86,33 @@ class LlmAnalyzerThread(threading.Thread):
         self._stop_event.set()
         self._transcript_changed.set()  # unblock wait
 
+    @staticmethod
+    def _filter_think(delta: str, in_think: bool) -> tuple[str, bool]:
+        """Strip <think>...</think> content from a streamed chunk.
+
+        Returns (filtered_text, still_in_think_block).
+        """
+        output: list[str] = []
+        buf = delta
+        while buf:
+            if in_think:
+                end = buf.find("</think>")
+                if end >= 0:
+                    in_think = False
+                    buf = buf[end + 8:]
+                else:
+                    buf = ""
+            else:
+                start = buf.find("<think>")
+                if start >= 0:
+                    output.append(buf[:start])
+                    in_think = True
+                    buf = buf[start + 7:]
+                else:
+                    output.append(buf)
+                    buf = ""
+        return "".join(output), in_think
+
     def run(self) -> None:
         _log.info("[llm] analyzer started, url=%s model=%s interval=%.0fs",
                   self.base_url, self.model, self.interval_sec)
@@ -150,17 +179,27 @@ class LlmAnalyzerThread(threading.Thread):
                     temperature=0.2,
                     max_tokens=512,
                     stream=True,
+                    extra_body={"reasoning_effort": "none"},
                 )
                 full_result = []
+                in_think = False
                 for chunk in stream:
                     if self._stop_event.is_set():
                         break
                     delta = chunk.choices[0].delta.content if chunk.choices else None
-                    if delta:
-                        full_result.append(delta)
+                    if not delta:
+                        continue
+                    # Filter <think>...</think> blocks
+                    filtered = self._filter_think(delta, in_think)
+                    in_think = filtered[1]
+                    text = filtered[0]
+                    if text:
+                        full_result.append(text)
                         if self.on_chunk:
-                            self.on_chunk(delta)
-                result = "".join(full_result).strip()
+                            self.on_chunk(text)
+                # Strip any residual think blocks from final result
+                result = re.sub(r"<think>.*?</think>", "", "".join(full_result),
+                                flags=re.DOTALL).strip()
                 with self._lock:
                     self._key_points = result
                     self._last_analyzed_transcript = current
