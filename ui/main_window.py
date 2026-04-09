@@ -196,11 +196,15 @@ class MainWindow:
         self._key_points_text.bind("<<Cut>>", lambda e: "break")
         self._key_points_text.tag_configure("kp_new", background="#c8f7c5")
         self._key_points_text.tag_configure("kp_recent", background="#fef9c3")
+        self._key_points_text.tag_configure("kp_cursor", background="#4a90d9", foreground="white")
         self._kp_segments: list[tuple[str, float]] = []  # (tag_name, monotonic_time)
         self._kp_seg_counter = 0
         self._kp_prev_norms: set[str] = set()
         self._kp_line_tags: dict[str, str] = {}  # normalized_line → tag
         self._kp_tick_id: str | None = None
+        self._kp_streaming = False
+        self._kp_stream_buf = ""  # accumulated streamed text so far
+        self._kp_old_text = ""    # text in widget before stream started
         pane.add(kp_lf, minsize=250, stretch="always")
 
         self._llm_thread: LlmAnalyzerThread | None = None
@@ -981,8 +985,19 @@ class MainWindow:
         def on_status(msg: str) -> None:
             self.root.after(0, lambda m=msg: self._kp_status_var.set(m))
 
+        def on_stream_start() -> None:
+            self.root.after(0, self._on_llm_stream_start)
+
+        def on_chunk(token: str) -> None:
+            self.root.after(0, lambda t=token: self._on_llm_chunk(t))
+
+        def on_stream_done(text: str) -> None:
+            self.root.after(0, lambda t=text: self._on_llm_stream_done(t))
+
         self._llm_thread = LlmAnalyzerThread(
             base_url, model, interval, on_result, on_error, on_status,
+            on_chunk=on_chunk, on_stream_start=on_stream_start,
+            on_stream_done=on_stream_done,
         )
         self._llm_thread.start()
 
@@ -1028,6 +1043,84 @@ class MainWindow:
                 if overlap >= 0.7:
                     return old_norm
         return None
+
+    def _on_llm_stream_start(self) -> None:
+        """Called when LLM starts generating — save old text, show cursor at position 1.0."""
+        self._kp_streaming = True
+        self._kp_stream_buf = ""
+        self._kp_old_text = self._key_points_text.get("1.0", tk.END).rstrip("\n")
+        # Place cursor at beginning
+        self._key_points_text.tag_remove("kp_cursor", "1.0", tk.END)
+        self._key_points_text.insert("1.0", "▌", "kp_cursor")
+
+    def _on_llm_chunk(self, token: str) -> None:
+        """Called for each streamed token — progressively replace text with cursor."""
+        if not self._kp_streaming:
+            return
+        self._kp_stream_buf += token
+        self._render_kp_stream()
+
+    def _render_kp_stream(self) -> None:
+        """Render streamed text progressively, replacing old text char-by-char with cursor."""
+        new_text = self._kp_stream_buf
+        old_text = self._kp_old_text
+        w = self._key_points_text
+
+        # Remove cursor marker
+        w.tag_remove("kp_cursor", "1.0", tk.END)
+        # Find cursor marker and remove it
+        content = w.get("1.0", tk.END).rstrip("\n")
+        cursor_pos = content.find("▌")
+        if cursor_pos >= 0:
+            # Delete the cursor character
+            idx = f"1.0 + {cursor_pos} chars"
+            w.delete(idx, f"{idx} + 1 chars")
+
+        # Now the widget has old text (possibly partially overwritten).
+        # Strategy: clear everything and write new_text up to current stream position,
+        # then keep remaining old text after that, then put cursor.
+        new_len = len(new_text)
+        old_len = len(old_text)
+
+        # Find how much of new_text matches old_text from the start
+        common_prefix = 0
+        while common_prefix < new_len and common_prefix < old_len:
+            if new_text[common_prefix] == old_text[common_prefix]:
+                common_prefix += 1
+            else:
+                break
+
+        # Rebuild widget content:
+        # [new_text] + [cursor ▌] + [remaining old_text after new_len if any]
+        w.delete("1.0", tk.END)
+
+        # Insert the new (streamed) text
+        if new_text:
+            w.insert(tk.END, new_text)
+
+        # Insert cursor
+        w.insert(tk.END, "▌", "kp_cursor")
+
+        # If old text extends beyond what we've streamed, show the rest dimmed
+        if old_len > new_len:
+            remaining_old = old_text[new_len:]
+            w.insert(tk.END, remaining_old)
+
+    def _on_llm_stream_done(self, full_text: str) -> None:
+        """Called when streaming finishes — remove cursor, clean up."""
+        self._kp_streaming = False
+        # Remove cursor
+        w = self._key_points_text
+        content = w.get("1.0", tk.END).rstrip("\n")
+        cursor_pos = content.find("▌")
+        if cursor_pos >= 0:
+            idx = f"1.0 + {cursor_pos} chars"
+            w.delete(idx, f"{idx} + 1 chars")
+        # Remove any trailing old text beyond the final result
+        current = w.get("1.0", tk.END).rstrip("\n")
+        if len(current) > len(full_text):
+            cut_idx = f"1.0 + {len(full_text)} chars"
+            w.delete(cut_idx, tk.END)
 
     def _on_llm_result(self, text: str) -> None:
         new_lines = [l for l in text.splitlines() if l.strip()]

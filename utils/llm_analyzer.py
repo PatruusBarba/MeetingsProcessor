@@ -52,6 +52,9 @@ class LlmAnalyzerThread(threading.Thread):
         on_result: Callable[[str], None],
         on_error: Callable[[str], None],
         on_status: Callable[[str], None],
+        on_chunk: Callable[[str], None] | None = None,
+        on_stream_start: Callable[[], None] | None = None,
+        on_stream_done: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__(daemon=True)
         self.base_url = base_url.rstrip("/")
@@ -60,6 +63,9 @@ class LlmAnalyzerThread(threading.Thread):
         self.on_result = on_result
         self.on_error = on_error
         self.on_status = on_status
+        self.on_chunk = on_chunk
+        self.on_stream_start = on_stream_start
+        self.on_stream_done = on_stream_done
 
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
@@ -133,7 +139,9 @@ class LlmAnalyzerThread(threading.Thread):
                     new_transcript=new_text.strip()[-3000:],
                     full_transcript=current.strip()[-6000:],
                 )
-                resp = client.chat.completions.create(
+                if self.on_stream_start:
+                    self.on_stream_start()
+                stream = client.chat.completions.create(
                     model=self.model or "",
                     messages=[
                         {"role": "system", "content": SYSTEM_PROMPT},
@@ -141,11 +149,23 @@ class LlmAnalyzerThread(threading.Thread):
                     ],
                     temperature=0.2,
                     max_tokens=512,
+                    stream=True,
                 )
-                result = resp.choices[0].message.content.strip()
+                full_result = []
+                for chunk in stream:
+                    if self._stop_event.is_set():
+                        break
+                    delta = chunk.choices[0].delta.content if chunk.choices else None
+                    if delta:
+                        full_result.append(delta)
+                        if self.on_chunk:
+                            self.on_chunk(delta)
+                result = "".join(full_result).strip()
                 with self._lock:
                     self._key_points = result
                     self._last_analyzed_transcript = current
+                if self.on_stream_done:
+                    self.on_stream_done(result)
                 self.on_result(result)
                 self.on_status("LLM: idle")
             except Exception as e:
