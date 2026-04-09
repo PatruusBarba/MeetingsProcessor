@@ -1063,6 +1063,7 @@ class MainWindow:
                     self._kp_stream_aging_map[prev_norm] = (tag, t)
                     break
         self._kp_stream_old_norms = set(self._kp_prev_norms)
+        self._kp_stream_old_lines = self._kp_old_text.split("\n") if self._kp_old_text else []
         # Place cursor at beginning
         w.tag_remove("kp_cursor", "1.0", tk.END)
         w.insert("1.0", "▌", "kp_cursor")
@@ -1119,12 +1120,37 @@ class MainWindow:
         if completed_lines:
             w.insert(tk.END, "\n")
 
-        # --- Section B: incomplete tail + cursor + rest of old line ---
+        # --- Section B: cursor line with color ---
+        old_lines_list = self._kp_stream_old_lines
+        cursor_line_idx = len(completed_lines)
+        cursor_old_tag = None
+        tail_matches_old = False  # default: treat as new
+
+        if cursor_line_idx < len(old_lines_list):
+            old_line_here = old_lines_list[cursor_line_idx]
+            if old_line_here.strip():
+                norm = self._kp_normalize(old_line_here)
+                match = self._kp_find_match(norm, aging_map)
+                if match is not None:
+                    cursor_old_tag = aging_map[match][0]
+            # Normalized prefix check: is new tail matching old line so far?
+            tail_norm = self._kp_normalize(tail) if tail else ""
+            old_at_norm = self._kp_normalize(old_line_here)
+            tail_matches_old = old_at_norm.startswith(tail_norm) if tail_norm else True
+
         if tail:
-            w.insert(tk.END, tail)
+            if tail_matches_old and cursor_old_tag:
+                w.insert(tk.END, tail, cursor_old_tag)
+            elif not tail_matches_old:
+                w.insert(tk.END, tail, "kp_stream_new")
+            else:
+                w.insert(tk.END, tail)
         w.insert(tk.END, "▌", "kp_cursor")
         if old_partial:
-            w.insert(tk.END, old_partial)
+            if cursor_old_tag:
+                w.insert(tk.END, old_partial, cursor_old_tag)
+            else:
+                w.insert(tk.END, old_partial)
 
         # --- Section C: remaining old lines with their age colors ---
         for line in old_lines_after:
