@@ -29,6 +29,11 @@ On first run, settings are stored in `settings.json` next to the executable (or 
 - Global hotkey **Ctrl+Shift+R** to start/stop recording (optional in Settings; polled from the GUI thread so it stays stable with PyAudio)
 - Single instance: starting again focuses the existing window
 - Optional **offline live transcript** during recording: **Parakeet TDT V3 INT8 ONNX** via **ONNX Runtime** (~650 MB on disk — same layout as [smcleod/parakeet-tdt-0.6b-v3-int8](https://huggingface.co/smcleod/parakeet-tdt-0.6b-v3-int8)); no NeMo, no 2.5 GB `.nemo` download
+- **VAD** segments live audio into utterances; **speech-start pre-roll** (seconds) is configurable in Settings
+- **Progress bars** for ONNX utterance decoding and for **MP3 encoding** after stop
+- Live transcript: **time-based segment highlighting**; long transcripts stay usable (autoscroll, no UI freeze)
+- Optional **LLM key points** during recording (OpenAI-compatible HTTP API, e.g. local LM Studio); key-points panel on the right; entries **age** in color (green → yellow → white)
+- When you save a recording, a **`.txt`** copy of the transcript and, if present, a **`_keypoints.txt`** file are written next to the MP3 (same base name)
 
 ### Live transcription (ONNX Parakeet)
 
