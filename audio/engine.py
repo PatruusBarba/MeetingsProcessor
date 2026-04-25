@@ -188,7 +188,15 @@ class WriterThread(threading.Thread):
             mic_avail = max(0, len(mic_buf) - mic_pos)
             loop_avail = max(0, len(loop_buf) - loop_pos)
             diff = mic_avail - loop_avail
-            if abs(diff) > max_skew_bytes:
+            # Only clamp when both sides have real buffered audio. If one side is
+            # temporarily empty, trimming here would eat live speech instead of
+            # correcting long-term device drift.
+            if (
+                mic_avail > 0
+                and loop_avail > 0
+                and min(mic_avail, loop_avail) >= 4096
+                and abs(diff) > max_skew_bytes
+            ):
                 trim = (abs(diff) - max_skew_bytes) & ~1
                 if trim > 0:
                     if diff > 0:
@@ -209,9 +217,10 @@ class WriterThread(threading.Thread):
 
             mix_bytes = min(mic_avail, loop_avail) & ~1
             if mix_bytes:
-                mic_view = memoryview(mic_buf)[mic_pos : mic_pos + mix_bytes]
-                loop_view = memoryview(loop_buf)[loop_pos : loop_pos + mix_bytes]
-                raw = _mix_pcm16_chunks(mic_view, loop_view)
+                raw = _mix_pcm16_chunks(
+                    bytes(mic_buf[mic_pos : mic_pos + mix_bytes]),
+                    bytes(loop_buf[loop_pos : loop_pos + mix_bytes]),
+                )
                 mic_pos += mix_bytes
                 loop_pos += mix_bytes
                 try:
@@ -238,16 +247,16 @@ class WriterThread(threading.Thread):
             if mic_avail and loop_avail:
                 chunk_bytes = min(mic_avail, loop_avail)
                 raw = _mix_pcm16_chunks(
-                    memoryview(mic_buf)[mic_pos : mic_pos + chunk_bytes],
-                    memoryview(loop_buf)[loop_pos : loop_pos + chunk_bytes],
+                    bytes(mic_buf[mic_pos : mic_pos + chunk_bytes]),
+                    bytes(loop_buf[loop_pos : loop_pos + chunk_bytes]),
                 )
                 mic_pos += chunk_bytes
                 loop_pos += chunk_bytes
             elif mic_avail:
-                raw = _mix_pcm16_with_zero(memoryview(mic_buf)[mic_pos : mic_pos + mic_avail])
+                raw = _mix_pcm16_with_zero(bytes(mic_buf[mic_pos : mic_pos + mic_avail]))
                 mic_pos += mic_avail
             else:
-                raw = _mix_pcm16_with_zero(memoryview(loop_buf)[loop_pos : loop_pos + loop_avail])
+                raw = _mix_pcm16_with_zero(bytes(loop_buf[loop_pos : loop_pos + loop_avail]))
                 loop_pos += loop_avail
             try:
                 writer.write_pcm(raw)
