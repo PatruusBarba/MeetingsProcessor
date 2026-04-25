@@ -171,6 +171,8 @@ class WriterThread(threading.Thread):
         loop_done = False
         was_paused_flag = False
         max_skew_bytes = max(2, int(self.sample_rate * 2 * 0.35))
+        solo_emit_threshold = max(4096, int(self.sample_rate * 2 * 0.08)) & ~1
+        chunk_limit_bytes = max(4096, int(self.sample_rate * 2 * 0.25)) & ~1
         compact_threshold = 128 * 1024
         last_skew_log = 0.0
 
@@ -212,34 +214,7 @@ class WriterThread(threading.Thread):
             mic_avail = max(0, len(mic_buf) - mic_pos)
             loop_avail = max(0, len(loop_buf) - loop_pos)
             diff = mic_avail - loop_avail
-            # Only clamp when both sides have real buffered audio. If one side is
-            # temporarily empty, trimming here would eat live speech instead of
-            # correcting long-term device drift.
-            if (
-                mic_avail > 0
-                and loop_avail > 0
-                and min(mic_avail, loop_avail) >= 4096
-                and abs(diff) > max_skew_bytes
-            ):
-                trim = (abs(diff) - max_skew_bytes) & ~1
-                if trim > 0:
-                    if diff > 0:
-                        mic_pos += trim
-                    else:
-                        loop_pos += trim
-                    now = time.monotonic()
-                    if now - last_skew_log >= 5.0:
-                        last_skew_log = now
-                        _log.warning(
-                            "Writer drift clamp trimmed %d bytes (mic=%d loop=%d)",
-                            trim,
-                            mic_avail,
-                            loop_avail,
-                        )
-                    mic_avail = max(0, len(mic_buf) - mic_pos)
-                    loop_avail = max(0, len(loop_buf) - loop_pos)
-
-            mix_bytes = min(mic_avail, loop_avail) & ~1
+            mix_bytes = min(mic_avail, loop_avail, chunk_limit_bytes) & ~1
             if mix_bytes:
                 mic_chunk = bytes(mic_buf[mic_pos : mic_pos + mix_bytes])
                 loop_chunk = bytes(loop_buf[loop_pos : loop_pos + mix_bytes])
@@ -258,6 +233,48 @@ class WriterThread(threading.Thread):
                     writer.close()
                     self._end_transcriber_feed()
                     return
+            else:
+                solo_bytes = 0
+                mic_solo = False
+                if mic_avail >= solo_emit_threshold and loop_avail == 0:
+                    solo_bytes = min(mic_avail, chunk_limit_bytes) & ~1
+                    mic_solo = True
+                elif loop_avail >= solo_emit_threshold and mic_avail == 0:
+                    solo_bytes = min(loop_avail, chunk_limit_bytes) & ~1
+                elif diff > max_skew_bytes and mic_avail >= solo_emit_threshold and loop_avail < solo_emit_threshold:
+                    solo_bytes = min(max_skew_bytes, chunk_limit_bytes, mic_avail) & ~1
+                    mic_solo = True
+                elif diff < -max_skew_bytes and loop_avail >= solo_emit_threshold and mic_avail < solo_emit_threshold:
+                    solo_bytes = min(max_skew_bytes, chunk_limit_bytes, loop_avail) & ~1
+                if solo_bytes:
+                    if mic_solo:
+                        mic_chunk = bytes(mic_buf[mic_pos : mic_pos + solo_bytes])
+                        raw = _mix_pcm16_with_zero(mic_chunk)
+                        transcriber_raw = mic_chunk
+                        mic_pos += solo_bytes
+                    else:
+                        loop_chunk = bytes(loop_buf[loop_pos : loop_pos + solo_bytes])
+                        raw = _mix_pcm16_with_zero(loop_chunk)
+                        transcriber_raw = loop_chunk
+                        loop_pos += solo_bytes
+                    now = time.monotonic()
+                    if now - last_skew_log >= 5.0:
+                        last_skew_log = now
+                        _log.warning(
+                            "Writer emitted solo audio chunk (mic=%d loop=%d solo=%d source=%s)",
+                            mic_avail,
+                            loop_avail,
+                            solo_bytes,
+                            "mic" if mic_solo else "loop",
+                        )
+                    try:
+                        writer.write_pcm(raw)
+                        self._feed_transcriber(transcriber_raw)
+                    except OSError as e:
+                        self.on_disk_error(str(e))
+                        writer.close()
+                        self._end_transcriber_feed()
+                        return
 
             if mic_pos >= compact_threshold and mic_pos >= len(mic_buf) // 2:
                 del mic_buf[:mic_pos]
