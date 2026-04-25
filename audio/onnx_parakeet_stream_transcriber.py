@@ -314,22 +314,38 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         speech_has_speech = False
         tail_keep_samples = max(int(max(self.end_silence_sec + 1.0, 3.0) * SR), FRAME_SAMPLES * 4)
         tail_window = np.array([], dtype=np.float32)
+        speech_scan_carry = np.array([], dtype=np.float32)
         transcript = ""
         seg_i = 0
         last_backlog_log = 0.0
 
         def reset_speech_tracking() -> None:
-            nonlocal speech_chunks, speech_cache, speech_samples, speech_has_speech, tail_window
+            nonlocal speech_chunks, speech_cache, speech_samples, speech_has_speech, tail_window, speech_scan_carry
             speech_chunks.clear()
             speech_cache = None
             speech_samples = 0
             speech_has_speech = False
             tail_window = np.array([], dtype=np.float32)
+            speech_scan_carry = np.array([], dtype=np.float32)
 
         def _tail_slice(pcm: np.ndarray) -> np.ndarray:
             if pcm.size <= tail_keep_samples:
                 return pcm.copy()
             return pcm[-tail_keep_samples:].copy()
+
+        def _update_speech_presence(pcm: np.ndarray) -> None:
+            nonlocal speech_has_speech, speech_scan_carry
+            if pcm.size == 0 or speech_has_speech:
+                return
+            scan = np.concatenate([speech_scan_carry, pcm]) if speech_scan_carry.size else pcm
+            pos = 0
+            n_scan = int(scan.size)
+            while pos + FRAME_SAMPLES <= n_scan:
+                if self.vad.frame_is_speech(scan[pos : pos + FRAME_SAMPLES]):
+                    speech_has_speech = True
+                    break
+                pos += FRAME_SAMPLES
+            speech_scan_carry = scan[pos:].copy() if pos < n_scan else np.array([], dtype=np.float32)
 
         def set_speech_buffer(pcm: np.ndarray) -> None:
             nonlocal speech_cache, speech_samples, speech_has_speech, tail_window
@@ -338,8 +354,10 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                 speech_chunks.append(pcm)
                 speech_cache = pcm
                 speech_samples = int(pcm.size)
-                speech_has_speech = self.vad.any_speech(pcm)
                 tail_window = _tail_slice(pcm)
+                _update_speech_presence(pcm)
+                if not speech_has_speech and self.vad.any_speech(pcm):
+                    speech_has_speech = True
 
         def append_speech_chunk(pcm: np.ndarray) -> None:
             nonlocal speech_cache, speech_samples, speech_has_speech, tail_window
@@ -348,6 +366,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
             speech_chunks.append(pcm)
             speech_cache = None
             speech_samples += int(pcm.size)
+            _update_speech_presence(pcm)
             if not speech_has_speech and self.vad.any_speech(pcm):
                 speech_has_speech = True
             if tail_window.size:
