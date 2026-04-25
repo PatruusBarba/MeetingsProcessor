@@ -37,6 +37,30 @@ def _mix_pcm16_chunks(a_pcm: bytes | memoryview, b_pcm: bytes | memoryview) -> b
     return mixed.tobytes()
 
 
+def _mix_pcm16_chunks_for_transcriber(a_pcm: bytes | memoryview, b_pcm: bytes | memoryview) -> bytes:
+    """Mix for STT while preserving amplitude when only one side is effectively active."""
+    if not a_pcm and not b_pcm:
+        return b""
+    if not a_pcm:
+        return bytes(b_pcm)
+    if not b_pcm:
+        return bytes(a_pcm)
+    a = np.frombuffer(a_pcm, dtype=np.int16).astype(np.int32)
+    b = np.frombuffer(b_pcm, dtype=np.int16).astype(np.int32)
+    # If one side is effectively silent, keep the active side unchanged so VAD/STT
+    # do not see speech attenuated by ~50%.
+    silence_rms = 220.0
+    rms_a = float(np.sqrt(np.mean(a * a))) if a.size else 0.0
+    rms_b = float(np.sqrt(np.mean(b * b))) if b.size else 0.0
+    if rms_a <= silence_rms and rms_b > silence_rms:
+        mixed = b
+    elif rms_b <= silence_rms and rms_a > silence_rms:
+        mixed = a
+    else:
+        mixed = np.clip(a + b, -32768, 32767)
+    return mixed.astype(np.int16, copy=False).tobytes()
+
+
 def _mix_pcm16_with_zero(pcm: bytes | memoryview) -> bytes:
     if not pcm:
         return b""
@@ -217,15 +241,18 @@ class WriterThread(threading.Thread):
 
             mix_bytes = min(mic_avail, loop_avail) & ~1
             if mix_bytes:
+                mic_chunk = bytes(mic_buf[mic_pos : mic_pos + mix_bytes])
+                loop_chunk = bytes(loop_buf[loop_pos : loop_pos + mix_bytes])
                 raw = _mix_pcm16_chunks(
-                    bytes(mic_buf[mic_pos : mic_pos + mix_bytes]),
-                    bytes(loop_buf[loop_pos : loop_pos + mix_bytes]),
+                    mic_chunk,
+                    loop_chunk,
                 )
+                transcriber_raw = _mix_pcm16_chunks_for_transcriber(mic_chunk, loop_chunk)
                 mic_pos += mix_bytes
                 loop_pos += mix_bytes
                 try:
                     writer.write_pcm(raw)
-                    self._feed_transcriber(raw)
+                    self._feed_transcriber(transcriber_raw)
                 except OSError as e:
                     self.on_disk_error(str(e))
                     writer.close()
@@ -246,21 +273,28 @@ class WriterThread(threading.Thread):
                 break
             if mic_avail and loop_avail:
                 chunk_bytes = min(mic_avail, loop_avail)
+                mic_chunk = bytes(mic_buf[mic_pos : mic_pos + chunk_bytes])
+                loop_chunk = bytes(loop_buf[loop_pos : loop_pos + chunk_bytes])
                 raw = _mix_pcm16_chunks(
-                    bytes(mic_buf[mic_pos : mic_pos + chunk_bytes]),
-                    bytes(loop_buf[loop_pos : loop_pos + chunk_bytes]),
+                    mic_chunk,
+                    loop_chunk,
                 )
+                transcriber_raw = _mix_pcm16_chunks_for_transcriber(mic_chunk, loop_chunk)
                 mic_pos += chunk_bytes
                 loop_pos += chunk_bytes
             elif mic_avail:
-                raw = _mix_pcm16_with_zero(bytes(mic_buf[mic_pos : mic_pos + mic_avail]))
+                mic_chunk = bytes(mic_buf[mic_pos : mic_pos + mic_avail])
+                raw = _mix_pcm16_with_zero(mic_chunk)
+                transcriber_raw = mic_chunk
                 mic_pos += mic_avail
             else:
-                raw = _mix_pcm16_with_zero(bytes(loop_buf[loop_pos : loop_pos + loop_avail]))
+                loop_chunk = bytes(loop_buf[loop_pos : loop_pos + loop_avail])
+                raw = _mix_pcm16_with_zero(loop_chunk)
+                transcriber_raw = loop_chunk
                 loop_pos += loop_avail
             try:
                 writer.write_pcm(raw)
-                self._feed_transcriber(raw)
+                self._feed_transcriber(transcriber_raw)
             except OSError as e:
                 self.on_disk_error(str(e))
                 writer.close()
