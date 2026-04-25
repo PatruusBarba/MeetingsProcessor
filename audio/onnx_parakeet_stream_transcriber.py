@@ -312,72 +312,50 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
         speech_cache: np.ndarray | None = None
         speech_samples = 0
         speech_has_speech = False
-        trailing_silence_frames = 0
-        vad_carry = np.array([], dtype=np.float32)
+        tail_keep_samples = max(int(max(self.end_silence_sec + 1.0, 3.0) * SR), FRAME_SAMPLES * 4)
+        tail_window = np.array([], dtype=np.float32)
         transcript = ""
         seg_i = 0
         last_backlog_log = 0.0
 
         def reset_speech_tracking() -> None:
-            nonlocal speech_chunks, speech_cache, speech_samples, speech_has_speech, trailing_silence_frames, vad_carry
+            nonlocal speech_chunks, speech_cache, speech_samples, speech_has_speech, tail_window
             speech_chunks.clear()
             speech_cache = None
             speech_samples = 0
             speech_has_speech = False
-            trailing_silence_frames = 0
-            vad_carry = np.array([], dtype=np.float32)
+            tail_window = np.array([], dtype=np.float32)
 
-        def rescan_speech_tracking(pcm: np.ndarray) -> None:
-            nonlocal speech_has_speech, trailing_silence_frames, vad_carry
-            trailing_silence_frames = 0
-            vad_carry = np.array([], dtype=np.float32)
-            if pcm.size == 0:
-                speech_has_speech = False
-                return
-            speech_has_speech = self.vad.any_speech(pcm)
-            pos = 0
-            n_scan = int(pcm.size)
-            while pos + FRAME_SAMPLES <= n_scan:
-                frame = pcm[pos : pos + FRAME_SAMPLES]
-                if self.vad.frame_is_speech(frame):
-                    trailing_silence_frames = 0
-                    speech_has_speech = True
-                else:
-                    trailing_silence_frames += 1
-                pos += FRAME_SAMPLES
-            if pos < n_scan:
-                vad_carry = pcm[pos:].copy()
+        def _tail_slice(pcm: np.ndarray) -> np.ndarray:
+            if pcm.size <= tail_keep_samples:
+                return pcm.copy()
+            return pcm[-tail_keep_samples:].copy()
 
         def set_speech_buffer(pcm: np.ndarray) -> None:
-            nonlocal speech_cache, speech_samples
+            nonlocal speech_cache, speech_samples, speech_has_speech, tail_window
             reset_speech_tracking()
             if pcm.size:
                 speech_chunks.append(pcm)
                 speech_cache = pcm
                 speech_samples = int(pcm.size)
-                rescan_speech_tracking(pcm)
+                speech_has_speech = self.vad.any_speech(pcm)
+                tail_window = _tail_slice(pcm)
 
         def append_speech_chunk(pcm: np.ndarray) -> None:
-            nonlocal speech_cache, speech_samples, speech_has_speech, trailing_silence_frames, vad_carry
+            nonlocal speech_cache, speech_samples, speech_has_speech, tail_window
             if pcm.size == 0:
                 return
             speech_chunks.append(pcm)
             speech_cache = None
             speech_samples += int(pcm.size)
-            scan = np.concatenate([vad_carry, pcm]) if vad_carry.size else pcm
-            pos = 0
-            n_scan = int(scan.size)
-            while pos + FRAME_SAMPLES <= n_scan:
-                frame = scan[pos : pos + FRAME_SAMPLES]
-                if self.vad.frame_is_speech(frame):
-                    trailing_silence_frames = 0
-                    speech_has_speech = True
-                else:
-                    trailing_silence_frames += 1
-                pos += FRAME_SAMPLES
-            vad_carry = scan[pos:].copy() if pos < n_scan else np.array([], dtype=np.float32)
             if not speech_has_speech and self.vad.any_speech(pcm):
                 speech_has_speech = True
+            if tail_window.size:
+                tail_window = np.concatenate([tail_window, pcm])
+            else:
+                tail_window = pcm.copy()
+            if tail_window.size > tail_keep_samples:
+                tail_window = tail_window[-tail_keep_samples:].copy()
 
         def materialize_speech() -> np.ndarray:
             nonlocal speech_cache
@@ -402,7 +380,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                 reset_speech_tracking()
                 return
 
-            trail_sil = trailing_silence_frames * (FRAME_SAMPLES / SR)
+            trail_sil = self.vad.trailing_silence_seconds(tail_window) if tail_window.size else 0.0
             hit_max = n >= self.max_samples
             hit_pause = (
                 trail_sil >= self.end_silence_sec
