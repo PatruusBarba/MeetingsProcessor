@@ -9,7 +9,7 @@ import time
 
 import pyaudiowpatch as pyaudio
 
-from audio.resample import downmix_int16, resample_mono_linear_int16
+from audio.resample import StreamingLinearResamplerInt16, downmix_int16
 
 
 def _rms_level_percent(mono: bytes) -> int:
@@ -65,6 +65,9 @@ class MicCaptureThread(threading.Thread):
         if channels < 1:
             channels = 1
         native_rate = int(self.device_info.get("defaultSampleRate") or 44100)
+        resampler = None
+        if native_rate != self.target_sample_rate:
+            resampler = StreamingLinearResamplerInt16(native_rate, self.target_sample_rate)
         try:
             try:
                 stream = self.p_audio.open(
@@ -92,14 +95,21 @@ class MicCaptureThread(threading.Thread):
                     break
                 mono = downmix_int16(data, channels)
                 self.level_pair[0] = _rms_level_percent(mono)
-                if native_rate != self.target_sample_rate:
-                    mono = resample_mono_linear_int16(mono, native_rate, self.target_sample_rate)
+                if resampler is not None:
+                    mono = resampler.process(mono)
                 try:
                     self.out_queue.put(mono, timeout=2.0)
                 except queue.Full:
                     self.error_box.append(("mic_queue", "Writer too slow"))
                     break
         finally:
+            if resampler is not None:
+                try:
+                    tail = resampler.flush()
+                    if tail:
+                        self.out_queue.put(tail, timeout=2.0)
+                except queue.Full:
+                    self.error_box.append(("mic_queue", "Writer too slow"))
             self.level_pair[0] = 0
             with self._stream_lock:
                 s = self._stream

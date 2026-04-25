@@ -69,15 +69,16 @@ class LlmAnalyzerThread(threading.Thread):
 
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
-        self._transcript = ""
-        self._last_analyzed_transcript = ""
+        self._pending_new_text = ""
+        self._full_transcript_tail = ""
         self._key_points = ""
         self._transcript_changed = threading.Event()
 
-    def update_transcript(self, full_text: str) -> None:
+    def update_transcript(self, *, appended_text: str, full_text_tail: str) -> None:
         """Called from any thread when transcript changes."""
         with self._lock:
-            self._transcript = full_text
+            self._pending_new_text += appended_text
+            self._full_transcript_tail = full_text_tail
         self._transcript_changed.set()
 
     def stop(self) -> None:
@@ -116,18 +117,17 @@ class LlmAnalyzerThread(threading.Thread):
                 break
 
             with self._lock:
-                current = self._transcript
-                prev = self._last_analyzed_transcript
+                current = self._full_transcript_tail
+                pending_new = self._pending_new_text
 
             # Skip if no new text or too soon
-            if current == prev:
+            if not pending_new.strip():
                 continue
             elapsed = time.monotonic() - last_analysis_time
             if elapsed < self.interval_sec:
                 continue
 
-            new_text = current[len(prev):] if current.startswith(prev) else current
-            if len(new_text.strip()) < 10:
+            if len(pending_new.strip()) < 10:
                 continue
 
             self.on_status("LLM: analyzing…")
@@ -136,7 +136,7 @@ class LlmAnalyzerThread(threading.Thread):
             try:
                 user_msg = USER_PROMPT_TEMPLATE.format(
                     key_points=self._key_points or "(none yet)",
-                    new_transcript=new_text.strip()[-3000:],
+                    new_transcript=pending_new.strip()[-3000:],
                     full_transcript=current.strip()[-6000:],
                 )
                 if self.on_stream_start:
@@ -164,7 +164,10 @@ class LlmAnalyzerThread(threading.Thread):
                 result = "".join(full_result).strip()
                 with self._lock:
                     self._key_points = result
-                    self._last_analyzed_transcript = current
+                    if self._pending_new_text.startswith(pending_new):
+                        self._pending_new_text = self._pending_new_text[len(pending_new) :]
+                    else:
+                        self._pending_new_text = ""
                 if self.on_stream_done:
                     self.on_stream_done(result)
                 self.on_result(result)

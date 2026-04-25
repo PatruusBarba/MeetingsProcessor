@@ -10,6 +10,7 @@ Live Parakeet TDT INT8 ONNX with VAD-gated utterances (not fixed 30 s cuts).
 from __future__ import annotations
 
 import array
+from collections import deque
 import os
 import queue
 import threading
@@ -307,33 +308,112 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
             ids = tdt_greedy(enc_out)
             return _decode_ids(ids, id_to_piece)
 
-        speech_buf = np.array([], dtype=np.float32)
+        speech_chunks: deque[np.ndarray] = deque()
+        speech_cache: np.ndarray | None = None
+        speech_samples = 0
+        speech_has_speech = False
+        trailing_silence_frames = 0
+        vad_carry = np.array([], dtype=np.float32)
         transcript = ""
         seg_i = 0
+        last_backlog_log = 0.0
+
+        def reset_speech_tracking() -> None:
+            nonlocal speech_chunks, speech_cache, speech_samples, speech_has_speech, trailing_silence_frames, vad_carry
+            speech_chunks.clear()
+            speech_cache = None
+            speech_samples = 0
+            speech_has_speech = False
+            trailing_silence_frames = 0
+            vad_carry = np.array([], dtype=np.float32)
+
+        def rescan_speech_tracking(pcm: np.ndarray) -> None:
+            nonlocal speech_has_speech, trailing_silence_frames, vad_carry
+            trailing_silence_frames = 0
+            vad_carry = np.array([], dtype=np.float32)
+            if pcm.size == 0:
+                speech_has_speech = False
+                return
+            speech_has_speech = self.vad.any_speech(pcm)
+            pos = 0
+            n_scan = int(pcm.size)
+            while pos + FRAME_SAMPLES <= n_scan:
+                frame = pcm[pos : pos + FRAME_SAMPLES]
+                if self.vad.frame_is_speech(frame):
+                    trailing_silence_frames = 0
+                    speech_has_speech = True
+                else:
+                    trailing_silence_frames += 1
+                pos += FRAME_SAMPLES
+            if pos < n_scan:
+                vad_carry = pcm[pos:].copy()
+
+        def set_speech_buffer(pcm: np.ndarray) -> None:
+            nonlocal speech_cache, speech_samples
+            reset_speech_tracking()
+            if pcm.size:
+                speech_chunks.append(pcm)
+                speech_cache = pcm
+                speech_samples = int(pcm.size)
+                rescan_speech_tracking(pcm)
+
+        def append_speech_chunk(pcm: np.ndarray) -> None:
+            nonlocal speech_cache, speech_samples, speech_has_speech, trailing_silence_frames, vad_carry
+            if pcm.size == 0:
+                return
+            speech_chunks.append(pcm)
+            speech_cache = None
+            speech_samples += int(pcm.size)
+            scan = np.concatenate([vad_carry, pcm]) if vad_carry.size else pcm
+            pos = 0
+            n_scan = int(scan.size)
+            while pos + FRAME_SAMPLES <= n_scan:
+                frame = scan[pos : pos + FRAME_SAMPLES]
+                if self.vad.frame_is_speech(frame):
+                    trailing_silence_frames = 0
+                    speech_has_speech = True
+                else:
+                    trailing_silence_frames += 1
+                pos += FRAME_SAMPLES
+            vad_carry = scan[pos:].copy() if pos < n_scan else np.array([], dtype=np.float32)
+            if not speech_has_speech and self.vad.any_speech(pcm):
+                speech_has_speech = True
+
+        def materialize_speech() -> np.ndarray:
+            nonlocal speech_cache
+            if speech_cache is None:
+                if not speech_chunks:
+                    speech_cache = np.array([], dtype=np.float32)
+                elif len(speech_chunks) == 1:
+                    speech_cache = speech_chunks[0]
+                else:
+                    speech_cache = np.concatenate(list(speech_chunks))
+            return speech_cache
 
         def try_flush_utterance(force_tail: bool) -> None:
-            nonlocal speech_buf, transcript, seg_i
-            n = int(speech_buf.size)
+            nonlocal transcript, seg_i
+            n = speech_samples
             min_need = MIN_TAIL_SAMPLES if force_tail else MIN_DECODE_SAMPLES
             if n < min_need:
                 return
 
-            if n >= self.min_skip_samples and not self.vad.any_speech(speech_buf):
+            if n >= self.min_skip_samples and not speech_has_speech:
                 log_line(f"[transcriber] skip silent buffer {n/SR:.1f}s")
-                speech_buf = np.array([], dtype=np.float32)
+                reset_speech_tracking()
                 return
 
-            trail_sil = self.vad.trailing_silence_seconds(speech_buf)
+            trail_sil = trailing_silence_frames * (FRAME_SAMPLES / SR)
             hit_max = n >= self.max_samples
             hit_pause = (
                 trail_sil >= self.end_silence_sec
                 and n >= MIN_DECODE_SAMPLES
-                and self.vad.any_speech(speech_buf)
+                and speech_has_speech
             )
 
             if not force_tail and not hit_max and not hit_pause:
                 return
 
+            speech_buf = materialize_speech()
             chunk: np.ndarray
             rest: np.ndarray
 
@@ -358,7 +438,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
 
             chunk = self.vad.trim_leading_silence(chunk, max_trim_sec=5.0, keep_before_speech_sec=2.0)
             if chunk.size < MIN_DECODE_SAMPLES:
-                speech_buf = np.concatenate([chunk, rest]) if chunk.size or rest.size else rest
+                set_speech_buffer(np.concatenate([chunk, rest]) if chunk.size or rest.size else rest)
                 return
 
             self._decoding_start(float(chunk.size) / SR)
@@ -379,7 +459,7 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                     delta = transcript[len(old) :].lstrip() if transcript.startswith(old) else transcript
                     if delta:
                         self._append_out(delta)
-            speech_buf = rest
+            set_speech_buffer(rest)
 
         try:
             while True:
@@ -391,21 +471,29 @@ class OnnxParakeetLiveTranscriberThread(threading.Thread):
                 if item is None:
                     # Drain remaining buffer in max_samples-sized chunks (capped iterations)
                     self._phase("Final utterance…")
-                    max_iters = max(1, int(speech_buf.size / MIN_DECODE_SAMPLES) + 1)
+                    max_iters = max(1, int(speech_samples / MIN_DECODE_SAMPLES) + 1)
                     for _ in range(max_iters):
-                        if speech_buf.size < MIN_DECODE_SAMPLES:
+                        if speech_samples < MIN_DECODE_SAMPLES:
                             break
-                        prev_size = speech_buf.size
+                        prev_size = speech_samples
                         try_flush_utterance(force_tail=True)
-                        if speech_buf.size >= prev_size:
+                        if speech_samples >= prev_size:
                             break  # no progress — avoid infinite loop
-                    speech_buf = np.array([], dtype=np.float32)
+                    reset_speech_tracking()
                     break
                 f32 = _pcm16_to_f32_mono(item)
                 if self.sample_rate_in != SR:
                     f32 = _resample_linear(f32, self.sample_rate_in, SR)
                 if f32.size:
-                    speech_buf = np.concatenate([speech_buf, f32])
+                    append_speech_chunk(f32)
+                qmax = self.audio_queue.maxsize or 0
+                if qmax and self.audio_queue.qsize() >= max(1, int(qmax * 0.75)):
+                    now = time.monotonic()
+                    if now - last_backlog_log >= 5.0:
+                        last_backlog_log = now
+                        log_line(
+                            f"[transcriber] backlog high {self.audio_queue.qsize()}/{qmax} chunks"
+                        )
                 try_flush_utterance(force_tail=False)
         except Exception as e:
             log_line(f"[transcriber] loop error {e}")

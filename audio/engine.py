@@ -11,6 +11,7 @@ from typing import Callable
 
 _log = logging.getLogger(__name__)
 
+import numpy as np
 import pyaudiowpatch as pyaudio
 
 from audio.devices import resolve_loopback_device
@@ -25,6 +26,22 @@ from utils.onnx_model_bundle import is_bundle_complete, resolve_transcription_mo
 
 def _mix_sample(a: int, b: int) -> int:
     return max(-32768, min(32767, (a + b) // 2))
+
+
+def _mix_pcm16_chunks(a_pcm: bytes | memoryview, b_pcm: bytes | memoryview) -> bytes:
+    if not a_pcm or not b_pcm:
+        return b""
+    a = np.frombuffer(a_pcm, dtype=np.int16).astype(np.int32)
+    b = np.frombuffer(b_pcm, dtype=np.int16).astype(np.int32)
+    mixed = ((a + b) // 2).astype(np.int16, copy=False)
+    return mixed.tobytes()
+
+
+def _mix_pcm16_with_zero(pcm: bytes | memoryview) -> bytes:
+    if not pcm:
+        return b""
+    samples = np.frombuffer(pcm, dtype=np.int16).astype(np.int32)
+    return (samples // 2).astype(np.int16, copy=False).tobytes()
 
 
 class WriterThread(threading.Thread):
@@ -60,14 +77,40 @@ class WriterThread(threading.Thread):
         self.on_convert_error = on_convert_error
         self.on_convert_progress = on_convert_progress
         self.transcriber_audio_q = transcriber_audio_q
+        self._transcriber_drop_count = 0
+        self._last_transcriber_backlog_log = 0.0
 
     def _feed_transcriber(self, mono_pcm: bytes) -> None:
         if not self.transcriber_audio_q or not mono_pcm:
             return
+        q = self.transcriber_audio_q
+        now = time.monotonic()
+        if q.maxsize and q.qsize() >= max(1, int(q.maxsize * 0.75)):
+            if now - self._last_transcriber_backlog_log >= 5.0:
+                self._last_transcriber_backlog_log = now
+                _log.warning(
+                    "Transcriber backlog high: %d/%d chunks queued",
+                    q.qsize(),
+                    q.maxsize,
+                )
         try:
-            self.transcriber_audio_q.put_nowait(mono_pcm)
+            q.put_nowait(mono_pcm)
         except queue.Full:
-            pass
+            self._transcriber_drop_count += 1
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                q.put_nowait(mono_pcm)
+            except queue.Full:
+                pass
+            if now - self._last_transcriber_backlog_log >= 2.0:
+                self._last_transcriber_backlog_log = now
+                _log.warning(
+                    "Transcriber backlog full; dropped %d chunks to stay realtime",
+                    self._transcriber_drop_count,
+                )
 
     def _end_transcriber_feed(self) -> None:
         if not self.transcriber_audio_q:
@@ -98,16 +141,14 @@ class WriterThread(threading.Thread):
 
         mic_buf = bytearray()
         loop_buf = bytearray()
+        mic_pos = 0
+        loop_pos = 0
         mic_done = False
         loop_done = False
         was_paused_flag = False
-
-        def take_i16(buf: bytearray) -> int | None:
-            if len(buf) < 2:
-                return None
-            v = int.from_bytes(buf[0:2], "little", signed=True)
-            del buf[0:2]
-            return v
+        max_skew_bytes = max(2, int(self.sample_rate * 2 * 0.35))
+        compact_threshold = 128 * 1024
+        last_skew_log = 0.0
 
         while not (mic_done and loop_done):
             paused = self.paused_event.is_set()
@@ -140,18 +181,39 @@ class WriterThread(threading.Thread):
             if was_paused_flag:
                 mic_buf.clear()
                 loop_buf.clear()
+                mic_pos = 0
+                loop_pos = 0
                 was_paused_flag = False
 
-            out_chunk = bytearray()
-            while len(mic_buf) >= 2 and len(loop_buf) >= 2:
-                a = take_i16(mic_buf)
-                b = take_i16(loop_buf)
-                if a is None or b is None:
-                    break
-                out_chunk.extend(_mix_sample(a, b).to_bytes(2, "little", signed=True))
+            mic_avail = max(0, len(mic_buf) - mic_pos)
+            loop_avail = max(0, len(loop_buf) - loop_pos)
+            diff = mic_avail - loop_avail
+            if abs(diff) > max_skew_bytes:
+                trim = (abs(diff) - max_skew_bytes) & ~1
+                if trim > 0:
+                    if diff > 0:
+                        mic_pos += trim
+                    else:
+                        loop_pos += trim
+                    now = time.monotonic()
+                    if now - last_skew_log >= 5.0:
+                        last_skew_log = now
+                        _log.warning(
+                            "Writer drift clamp trimmed %d bytes (mic=%d loop=%d)",
+                            trim,
+                            mic_avail,
+                            loop_avail,
+                        )
+                    mic_avail = max(0, len(mic_buf) - mic_pos)
+                    loop_avail = max(0, len(loop_buf) - loop_pos)
 
-            if out_chunk:
-                raw = bytes(out_chunk)
+            mix_bytes = min(mic_avail, loop_avail) & ~1
+            if mix_bytes:
+                mic_view = memoryview(mic_buf)[mic_pos : mic_pos + mix_bytes]
+                loop_view = memoryview(loop_buf)[loop_pos : loop_pos + mix_bytes]
+                raw = _mix_pcm16_chunks(mic_view, loop_view)
+                mic_pos += mix_bytes
+                loop_pos += mix_bytes
                 try:
                     writer.write_pcm(raw)
                     self._feed_transcriber(raw)
@@ -161,21 +223,35 @@ class WriterThread(threading.Thread):
                     self._end_transcriber_feed()
                     return
 
+            if mic_pos >= compact_threshold and mic_pos >= len(mic_buf) // 2:
+                del mic_buf[:mic_pos]
+                mic_pos = 0
+            if loop_pos >= compact_threshold and loop_pos >= len(loop_buf) // 2:
+                del loop_buf[:loop_pos]
+                loop_pos = 0
+
         while True:
-            if len(mic_buf) < 2 and len(loop_buf) < 2:
+            mic_avail = (len(mic_buf) - mic_pos) & ~1
+            loop_avail = (len(loop_buf) - loop_pos) & ~1
+            if mic_avail < 2 and loop_avail < 2:
                 break
-            a = take_i16(mic_buf) if len(mic_buf) >= 2 else None
-            b = take_i16(loop_buf) if len(loop_buf) >= 2 else None
-            if a is None and b is None:
-                break
-            if a is None:
-                a = 0
-            if b is None:
-                b = 0
-            seg = _mix_sample(a, b).to_bytes(2, "little", signed=True)
+            if mic_avail and loop_avail:
+                chunk_bytes = min(mic_avail, loop_avail)
+                raw = _mix_pcm16_chunks(
+                    memoryview(mic_buf)[mic_pos : mic_pos + chunk_bytes],
+                    memoryview(loop_buf)[loop_pos : loop_pos + chunk_bytes],
+                )
+                mic_pos += chunk_bytes
+                loop_pos += chunk_bytes
+            elif mic_avail:
+                raw = _mix_pcm16_with_zero(memoryview(mic_buf)[mic_pos : mic_pos + mic_avail])
+                mic_pos += mic_avail
+            else:
+                raw = _mix_pcm16_with_zero(memoryview(loop_buf)[loop_pos : loop_pos + loop_avail])
+                loop_pos += loop_avail
             try:
-                writer.write_pcm(seg)
-                self._feed_transcriber(seg)
+                writer.write_pcm(raw)
+                self._feed_transcriber(raw)
             except OSError as e:
                 self.on_disk_error(str(e))
                 writer.close()
@@ -290,8 +366,8 @@ class RecordingEngine:
             mdir = resolve_transcription_model_dir(transcription_model_dir)
             if not is_bundle_complete(mdir):
                 return False, "Transcription: download the ONNX model in Settings first."
-            # Unbounded: while ONNX sessions load (can take tens of seconds), writer must not block/drop audio.
-            trans_q = queue.Queue()
+            # Bounded backlog: enough headroom for ONNX startup/slowdown without allowing runaway memory growth.
+            trans_q = queue.Queue(maxsize=4096)
             self._transcriber_audio_q = trans_q
             self._transcriber_thread = OnnxParakeetLiveTranscriberThread(
                 trans_q,

@@ -30,6 +30,10 @@ if TYPE_CHECKING:
     import pyaudiowpatch as pyaudio
 
 
+TRANSCRIPT_DISPLAY_MAX_CHARS = 120_000
+TRANSCRIPT_DISPLAY_TRIM_TO_CHARS = 90_000
+
+
 class MainWindow:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -64,6 +68,8 @@ class MainWindow:
         self._decode_est_sec: float = 5.0
         self._decode_ui_gen: int = 0
         self._decode_finish_after: str | None = None
+        self._full_transcript_text = ""
+        self._visible_transcript_chars = 0
 
         self._tray_icon: pystray.Icon | None = None
         self._tray_thread: threading.Thread | None = None
@@ -173,6 +179,7 @@ class MainWindow:
         self._transcript.tag_configure("seg_recent", background="#fef9c3")
         self._segments: list[tuple[str, float]] = []  # (tag_name, monotonic_time)
         self._seg_counter = 0
+        self._seg_tags: set[str] = set()
         self._seg_tick_id: str | None = None
         pane.add(trans_lf, minsize=300, stretch="always")
 
@@ -200,6 +207,7 @@ class MainWindow:
         self._key_points_text.tag_configure("kp_stream_new", background="#c8f7c5")
         self._kp_segments: list[tuple[str, float]] = []  # (tag_name, monotonic_time)
         self._kp_seg_counter = 0
+        self._kp_tags: set[str] = set()
         self._kp_prev_norms: set[str] = set()
         self._kp_line_tags: dict[str, str] = {}  # normalized_line → tag
         self._kp_tick_id: str | None = None
@@ -242,28 +250,81 @@ class MainWindow:
 
     def _next_seg_tag(self) -> str:
         self._seg_counter += 1
-        return f"seg{self._seg_counter}"
+        tag = f"seg{self._seg_counter}"
+        self._seg_tags.add(tag)
+        return tag
+
+    def _next_kp_tag(self) -> str:
+        self._kp_seg_counter += 1
+        tag = f"kp{self._kp_seg_counter}"
+        self._kp_tags.add(tag)
+        return tag
+
+    def _delete_seg_tag(self, tag: str) -> None:
+        if tag not in self._seg_tags:
+            return
+        try:
+            self._transcript.tag_delete(tag)
+        except tk.TclError:
+            pass
+        self._seg_tags.discard(tag)
+
+    def _delete_kp_tag(self, tag: str) -> None:
+        if tag not in self._kp_tags:
+            return
+        try:
+            self._key_points_text.tag_delete(tag)
+        except tk.TclError:
+            pass
+        self._kp_tags.discard(tag)
+
+    def _rebuild_transcript_widget(self, *, highlight_suffix: str = "") -> None:
+        display_text = self._full_transcript_text
+        if len(display_text) > TRANSCRIPT_DISPLAY_MAX_CHARS:
+            display_text = display_text[-TRANSCRIPT_DISPLAY_TRIM_TO_CHARS:]
+        self._transcript.delete("1.0", tk.END)
+        for tag in list(self._seg_tags):
+            self._delete_seg_tag(tag)
+        self._segments.clear()
+        self._visible_transcript_chars = len(display_text)
+        if not display_text:
+            return
+        suffix = highlight_suffix[-min(len(highlight_suffix), len(display_text)) :] if highlight_suffix else ""
+        if suffix and not display_text.endswith(suffix):
+            suffix = ""
+        prefix_len = len(display_text) - len(suffix)
+        if prefix_len > 0:
+            self._transcript.insert(tk.END, display_text[:prefix_len])
+        if suffix:
+            tag = self._next_seg_tag()
+            self._transcript.insert(tk.END, suffix, tag)
+            self._segments.append((tag, time.monotonic()))
+            self._start_seg_aging()
+        self._transcript_see_end()
 
     def _clear_transcript(self) -> None:
         self._transcript.delete("1.0", tk.END)
+        self._full_transcript_text = ""
+        self._visible_transcript_chars = 0
+        for tag in list(self._seg_tags):
+            self._delete_seg_tag(tag)
         self._segments.clear()
 
     def _set_transcript_text(self, text: str) -> None:
-        self._transcript.delete("1.0", tk.END)
-        self._segments.clear()
-        tag = self._next_seg_tag()
-        self._transcript.insert(tk.END, text, tag)
-        self._transcript.tag_configure(tag)
-        self._segments.append((tag, time.monotonic()))
-        self._transcript_see_end()
-        self._start_seg_aging()
+        self._full_transcript_text = text
+        self._rebuild_transcript_widget(highlight_suffix=text)
 
     def _append_transcript_fragment(self, fragment: str) -> None:
         """Single-fragment append (used outside poll batching)."""
+        self._full_transcript_text += fragment
+        if self._visible_transcript_chars + len(fragment) > TRANSCRIPT_DISPLAY_MAX_CHARS:
+            self._rebuild_transcript_widget(highlight_suffix=fragment)
+            return
         tag = self._next_seg_tag()
         self._transcript.insert(tk.END, fragment, tag)
         self._transcript.tag_configure(tag)
         self._segments.append((tag, time.monotonic()))
+        self._visible_transcript_chars += len(fragment)
         self._transcript_see_end()
         self._start_seg_aging()
 
@@ -271,11 +332,17 @@ class MainWindow:
         """Append multiple fragments in one widget transaction — single insert + see()."""
         if not fragments:
             return
+        text = "".join(fragments)
+        self._full_transcript_text += text
+        if self._visible_transcript_chars + len(text) > TRANSCRIPT_DISPLAY_MAX_CHARS:
+            self._rebuild_transcript_widget(highlight_suffix=text)
+            return
         now = time.monotonic()
         tag = self._next_seg_tag()
-        self._transcript.insert(tk.END, "".join(fragments), tag)
+        self._transcript.insert(tk.END, text, tag)
         self._transcript.tag_configure(tag)
         self._segments.append((tag, now))
+        self._visible_transcript_chars += len(text)
         self._transcript_see_end()
         self._start_seg_aging()
 
@@ -298,7 +365,7 @@ class MainWindow:
                 self._transcript.tag_configure(tag, background="#fef9c3")
                 still_alive.append((tag, t))
             else:
-                self._transcript.tag_configure(tag, background="")
+                self._delete_seg_tag(tag)
         self._segments = still_alive
         if self._segments:
             self._seg_tick_id = self.root.after(500, self._tick_seg_aging)
@@ -415,6 +482,7 @@ class MainWindow:
             max_per_tick = 64
             pending_fragments: list[str] = []
             last_full_text: str | None = None
+            llm_delta = ""
             while processed < max_per_tick:
                 try:
                     item = self._transcription_q.get_nowait()
@@ -453,11 +521,18 @@ class MainWindow:
                     last_full_text = item
             # Apply text updates once (not per-item)
             if last_full_text is not None:
+                prev_full = self._full_transcript_text
                 self._set_transcript_text(last_full_text)
+                llm_delta = (
+                    last_full_text[len(prev_full) :]
+                    if last_full_text.startswith(prev_full)
+                    else last_full_text
+                )
             if pending_fragments:
                 self._batch_append_transcript(pending_fragments)
-            if last_full_text is not None or pending_fragments:
-                self._feed_llm_transcript()
+                llm_delta += "".join(pending_fragments)
+            if llm_delta:
+                self._feed_llm_transcript(llm_delta)
         except Exception:
             pass  # never break the after() chain
         delay_ms = max(10, 50 - processed) if processed else 120
@@ -951,7 +1026,7 @@ class MainWindow:
 
     def _save_transcript_file(self, mp3_path: str) -> None:
         """Save transcript text next to the MP3 file with matching name."""
-        text = self._transcript.get("1.0", tk.END).strip()
+        text = self._full_transcript_text.strip()
         if not text:
             return
         txt_path = os.path.splitext(mp3_path)[0] + ".txt"
@@ -1010,13 +1085,15 @@ class MainWindow:
             self._llm_thread.stop()
             self._llm_thread = None
 
-    def _feed_llm_transcript(self) -> None:
-        """Send current transcript text to LLM analyzer (if running)."""
+    def _feed_llm_transcript(self, appended_text: str) -> None:
+        """Send appended transcript text plus the latest full-context tail to the LLM analyzer."""
         if self._llm_thread is None:
             return
-        text = self._transcript.get("1.0", tk.END).strip()
-        if text:
-            self._llm_thread.update_transcript(text)
+        if appended_text.strip():
+            self._llm_thread.update_transcript(
+                appended_text=appended_text,
+                full_text_tail=self._full_transcript_text[-6000:],
+            )
 
     @staticmethod
     def _kp_normalize(s: str) -> str:
@@ -1215,8 +1292,7 @@ class MainWindow:
                 # Old line, aging finished — no tag
                 self._key_points_text.insert(tk.END, line)
             else:
-                self._kp_seg_counter += 1
-                tag = f"kp{self._kp_seg_counter}"
+                tag = self._next_kp_tag()
                 self._key_points_text.insert(tk.END, line, tag)
                 new_segments.append((tag, now))
                 new_line_tags[norm] = tag
@@ -1224,6 +1300,10 @@ class MainWindow:
         self._kp_segments = new_segments
         self._kp_line_tags = new_line_tags
         self._kp_prev_norms = {self._kp_normalize(l) for l in new_lines}
+        used_tags = set(new_line_tags.values())
+        for tag in list(self._kp_tags):
+            if tag not in used_tags:
+                self._delete_kp_tag(tag)
         self._start_kp_aging()
 
     def _start_kp_aging(self) -> None:
@@ -1243,7 +1323,7 @@ class MainWindow:
                 self._key_points_text.tag_configure(tag, background="#fef9c3")
                 still_alive.append((tag, t))
             else:
-                self._key_points_text.tag_configure(tag, background="")
+                self._delete_kp_tag(tag)
         self._kp_segments = still_alive
         if self._kp_segments:
             self._kp_tick_id = self.root.after(500, self._tick_kp_aging)
